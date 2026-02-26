@@ -1903,6 +1903,49 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {/* Discharged Section in Attendance */}
+                {attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between px-1">
+                      <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500">ATTENDANCE HISTORY (DISCHARGED)</h3>
+                      <span className="text-xs font-mono text-slate-600">{attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).length} Personnel</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).map(entry => (
+                        <div key={entry.id} className="flex items-center gap-3 bg-slate-900/40 border border-slate-800 p-2.5 rounded group hover:border-cyan-500/30 transition-all">
+                          <div 
+                            className="w-1 h-8 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]" 
+                            style={{ backgroundColor: STATUS_COLORS[entry.status] || '#1e293b' }} 
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-bold text-slate-200 truncate">{entry.name}</div>
+                              <div className="text-[10px] font-mono text-slate-600 uppercase">DISCHARGED</div>
+                            </div>
+                            <div className="text-xs font-mono text-slate-500 uppercase truncate">UNASSIGNED</div>
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            {isAdmin ? (
+                              <select 
+                                value={entry.status}
+                                onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
+                                className="bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400 uppercase tracking-tighter rounded px-1 py-0.5 focus:outline-none focus:border-cyan-500/50"
+                              >
+                                {Object.keys(STATUS_COLORS).map(s => (
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tighter w-16 text-right">
+                                {entry.status}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -2668,7 +2711,7 @@ export default function App() {
                           return (
                             <div key={entry.id} className="flex items-center gap-2.5 bg-slate-900/40 border border-slate-800 p-2 rounded group hover:border-cyan-500/30 transition-colors">
                               <div 
-                                className="w-1 h-7 rounded-full" 
+                                className="w-1 h-7 rounded-full shrink-0" 
                                 style={{ backgroundColor: STATUS_COLORS[entry.status] || '#3b82f6' }} 
                               />
                               <div className="flex-1 min-w-0">
@@ -2684,7 +2727,19 @@ export default function App() {
                                 <div className="text-[10px] font-mono text-slate-500 uppercase truncate">{entry.role} // {entry.squad}</div>
                               </div>
                               <div className="text-[10px] font-mono text-slate-600 uppercase shrink-0">
-                                {entry.status}
+                                {isAdmin ? (
+                                  <select
+                                    value={entry.status}
+                                    onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
+                                    className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-[9px] font-mono focus:border-cyan-500/50 outline-none transition-all cursor-pointer"
+                                  >
+                                    {Object.keys(STATUS_COLORS).map(status => (
+                                      <option key={status} value={status}>{status}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  entry.status
+                                )}
                               </div>
                             </div>
                           );

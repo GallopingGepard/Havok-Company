@@ -697,7 +697,7 @@ async function startServer() {
   app.post("/api/missions/:id/signup", (req, res) => {
     const { name, status } = req.body;
     let { role, squad } = req.body;
-    const missionId = req.params.id;
+    const missionId = Number(req.params.id);
 
     if (!name) {
       return res.status(400).json({ error: "Name is required" });
