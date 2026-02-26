@@ -241,6 +241,7 @@ Havok, with the assistance of the 16th SOAR, will conduct a raid on Lento Airbas
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ server: httpServer });
   const PORT = 3000;
@@ -250,10 +251,12 @@ async function startServer() {
     secret: "havok-secret-key",
     resave: false,
     saveUninitialized: false,
+    proxy: true,
     cookie: {
       secure: true,
       sameSite: "none",
       httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
   }));
 
@@ -363,17 +366,23 @@ async function startServer() {
 
   // Admin Middleware
   const isAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if ((req.session as any).role === "admin") {
+    const role = (req.session as any).role;
+    if (role === "admin") {
       next();
     } else {
-      res.status(403).json({ error: "Unauthorized" });
+      console.warn(`Unauthorized access attempt to ${req.path} from user: ${(req.session as any).username || 'anonymous'} (role: ${role || 'none'})`);
+      res.status(403).json({ error: "Unauthorized: Admin access required" });
     }
   };
 
   // Admin User Management Routes
   app.get("/api/users", isAdmin, (req, res) => {
-    const users = db.prepare("SELECT id, username, role, roster_id FROM users").all();
-    res.json(users);
+    try {
+      const users = db.prepare("SELECT id, username, role, roster_id FROM users").all();
+      res.json(users);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch users" });
+    }
   });
 
   app.post("/api/users", isAdmin, (req, res) => {
@@ -383,29 +392,58 @@ async function startServer() {
     }
     try {
       const hashedPassword = bcrypt.hashSync(password, 10);
-      const result = db.prepare("INSERT INTO users (username, password, role, roster_id) VALUES (?, ?, ?, ?)").run(username, hashedPassword, role, roster_id);
+      const result = db.prepare("INSERT INTO users (username, password, role, roster_id) VALUES (?, ?, ?, ?)").run(
+        username, 
+        hashedPassword, 
+        role || 'member', 
+        roster_id === undefined ? null : roster_id
+      );
+      broadcast({ type: 'UPDATE_USERS' });
       res.json({ id: result.lastInsertRowid });
     } catch (err) {
-      res.status(400).json({ error: "Username already exists" });
+      console.error("Error creating user:", err);
+      res.status(400).json({ error: "Username already exists or invalid data" });
     }
   });
 
   app.put("/api/users/:id", isAdmin, (req, res) => {
     const { id } = req.params;
     const { username, password, role, roster_id } = req.body;
-    if (password) {
-      const hashedPassword = bcrypt.hashSync(password, 10);
-      db.prepare("UPDATE users SET username = ?, password = ?, role = ?, roster_id = ? WHERE id = ?").run(username, hashedPassword, role, roster_id, id);
-    } else {
-      db.prepare("UPDATE users SET username = ?, role = ?, roster_id = ? WHERE id = ?").run(username, role, roster_id, id);
+    try {
+      if (password) {
+        const hashedPassword = bcrypt.hashSync(password, 10);
+        db.prepare("UPDATE users SET username = ?, password = ?, role = ?, roster_id = ? WHERE id = ?").run(
+          username || '', 
+          hashedPassword, 
+          role || 'member', 
+          roster_id === undefined ? null : roster_id, 
+          id
+        );
+      } else {
+        db.prepare("UPDATE users SET username = ?, role = ?, roster_id = ? WHERE id = ?").run(
+          username || '', 
+          role || 'member', 
+          roster_id === undefined ? null : roster_id, 
+          id
+        );
+      }
+      broadcast({ type: 'UPDATE_USERS' });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Error updating user:", err);
+      res.status(500).json({ error: "Failed to update user" });
     }
-    res.json({ success: true });
   });
 
   app.delete("/api/users/:id", isAdmin, (req, res) => {
     const { id } = req.params;
-    db.prepare("DELETE FROM users WHERE id = ?").run(id);
-    res.json({ success: true });
+    try {
+      db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      broadcast({ type: 'UPDATE_USERS' });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete user" });
+    }
   });
 
   // Admin Roster Routes
@@ -414,49 +452,85 @@ async function startServer() {
     try {
       const maxOrder = db.prepare("SELECT MAX(display_order) as maxOrder FROM roster WHERE squad = ?").get(squad) as { maxOrder: number };
       const display_order = (maxOrder?.maxOrder || 0) + 1;
-      const result = db.prepare("INSERT INTO roster (name, rank, squad, team, role, mos_abr, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)").run(name, rank, squad, team, role, mos_abr, display_order);
+      const result = db.prepare("INSERT INTO roster (name, rank, squad, team, role, mos_abr, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        name || '', 
+        rank || '', 
+        squad || '', 
+        team || '', 
+        role || '', 
+        mos_abr || '', 
+        display_order
+      );
+      broadcast({ type: 'UPDATE_ROSTER' });
       res.json({ id: result.lastInsertRowid });
     } catch (err) {
+      console.error("Error adding roster member:", err);
       res.status(400).json({ error: "Failed to add member" });
     }
   });
 
   app.put("/api/roster/reorder", isAdmin, (req, res) => {
     const { members } = req.body; // Array of { id, display_order, squad, team }
-    const updateRoster = db.prepare("UPDATE roster SET display_order = ?, squad = ?, team = ? WHERE id = ?");
-    const updateAttendance = db.prepare("UPDATE attendance SET squad = ? WHERE name = (SELECT name FROM roster WHERE id = ?)");
-    const transaction = db.transaction((items) => {
-      for (const item of items) {
-        updateRoster.run(item.display_order, item.squad, item.team, item.id);
-        updateAttendance.run(item.squad, item.id);
-      }
-    });
-    transaction(members);
-    res.json({ success: true });
+    try {
+      const updateRoster = db.prepare("UPDATE roster SET display_order = ?, squad = ?, team = ? WHERE id = ?");
+      const updateAttendance = db.prepare("UPDATE attendance SET squad = ? WHERE name = (SELECT name FROM roster WHERE id = ?)");
+      const transaction = db.transaction((items) => {
+        for (const item of items) {
+          updateRoster.run(item.display_order, item.squad, item.team, item.id);
+          updateAttendance.run(item.squad, item.id);
+        }
+      });
+      transaction(members);
+      broadcast({ type: 'UPDATE_ROSTER' });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Error reordering roster:", err);
+      res.status(500).json({ error: "Failed to reorder roster" });
+    }
   });
 
   app.put("/api/roster/:id", isAdmin, (req, res) => {
     const { id } = req.params;
     const { name, rank, squad, team, role, mos_abr } = req.body;
     
-    const oldMember = db.prepare("SELECT name FROM roster WHERE id = ?").get(id) as { name: string };
-    
-    db.prepare("UPDATE roster SET name = ?, rank = ?, squad = ?, team = ?, role = ?, mos_abr = ? WHERE id = ?").run(name, rank, squad, team, role, mos_abr, id);
-    
-    if (oldMember && oldMember.name !== name) {
-      db.prepare("UPDATE attendance SET name = ?, squad = ?, role = ? WHERE name = ?").run(name, squad, role, oldMember.name);
-      db.prepare("UPDATE users SET username = ? WHERE username = ?").run(name, oldMember.name);
-    } else {
-      db.prepare("UPDATE attendance SET squad = ?, role = ? WHERE name = ?").run(squad, role, name);
+    try {
+      const oldMember = db.prepare("SELECT name FROM roster WHERE id = ?").get(id) as { name: string };
+      
+      db.prepare("UPDATE roster SET name = ?, rank = ?, squad = ?, team = ?, role = ?, mos_abr = ? WHERE id = ?").run(
+        name || '', 
+        rank || '', 
+        squad || '', 
+        team || '', 
+        role || '', 
+        mos_abr || '', 
+        id
+      );
+      
+      if (oldMember && oldMember.name !== name) {
+        db.prepare("UPDATE attendance SET name = ?, squad = ?, role = ? WHERE name = ?").run(name, squad, role, oldMember.name);
+        db.prepare("UPDATE users SET username = ? WHERE username = ?").run(name, oldMember.name);
+      } else {
+        db.prepare("UPDATE attendance SET squad = ?, role = ? WHERE name = ?").run(squad, role, name);
+      }
+      
+      broadcast({ type: 'UPDATE_ROSTER' });
+      broadcast({ type: 'UPDATE_USERS' });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Error updating roster member:", err);
+      res.status(500).json({ error: "Failed to update member" });
     }
-    
-    res.json({ success: true });
   });
 
   app.delete("/api/roster/:id", isAdmin, (req, res) => {
     const { id } = req.params;
-    db.prepare("DELETE FROM roster WHERE id = ?").run(id);
-    res.json({ success: true });
+    try {
+      db.prepare("DELETE FROM roster WHERE id = ?").run(id);
+      broadcast({ type: 'UPDATE_ROSTER' });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete member" });
+    }
   });
 
   app.put("/api/missions/:id/debrief", isAdmin, (req, res) => {
@@ -472,16 +546,29 @@ async function startServer() {
       title, location, situation, objectives, 
       env_terrain, env_time, env_weather, env_forecast, date 
     } = req.body;
-    const result = db.prepare(`
-      INSERT INTO missions (
-        title, location, situation, objectives, 
-        env_terrain, env_time, env_weather, env_forecast, date
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      title, location, situation, objectives, 
-      env_terrain, env_time, env_weather, env_forecast, date
-    );
-    res.json({ id: result.lastInsertRowid });
+    try {
+      const result = db.prepare(`
+        INSERT INTO missions (
+          title, location, situation, objectives, 
+          env_terrain, env_time, env_weather, env_forecast, date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        title || '', 
+        location || '', 
+        situation || '', 
+        objectives || '[]', 
+        env_terrain || '', 
+        env_time || '', 
+        env_weather || '', 
+        env_forecast || '', 
+        date || new Date().toISOString().split('T')[0]
+      );
+      broadcast({ type: 'UPDATE_MISSIONS' });
+      res.json({ id: result.lastInsertRowid });
+    } catch (err) {
+      console.error("Error creating mission:", err);
+      res.status(500).json({ error: "Failed to create mission" });
+    }
   });
 
   app.put("/api/missions/:id", isAdmin, (req, res) => {
@@ -491,32 +578,55 @@ async function startServer() {
       env_terrain, env_time, env_weather, env_forecast, date, status, debrief 
     } = req.body;
     
-    if (status) {
-      db.prepare(`
-        UPDATE missions SET 
-          title = ?, location = ?, situation = ?, objectives = ?, 
-          env_terrain = ?, env_time = ?, env_weather = ?, env_forecast = ?, 
-          date = ?, status = ?, debrief = ? 
-        WHERE id = ?
-      `).run(
-        title, location, situation, objectives, 
-        env_terrain, env_time, env_weather, env_forecast, 
-        date, status, debrief, id
-      );
-    } else {
-      db.prepare(`
-        UPDATE missions SET 
-          title = ?, location = ?, situation = ?, objectives = ?, 
-          env_terrain = ?, env_time = ?, env_weather = ?, env_forecast = ?, 
-          date = ?, debrief = ? 
-        WHERE id = ?
-      `).run(
-        title, location, situation, objectives, 
-        env_terrain, env_time, env_weather, env_forecast, 
-        date, debrief, id
-      );
+    try {
+      if (status) {
+        db.prepare(`
+          UPDATE missions SET 
+            title = ?, location = ?, situation = ?, objectives = ?, 
+            env_terrain = ?, env_time = ?, env_weather = ?, env_forecast = ?, 
+            date = ?, status = ?, debrief = ? 
+          WHERE id = ?
+        `).run(
+          title || '', 
+          location || '', 
+          situation || '', 
+          objectives || '[]', 
+          env_terrain || '', 
+          env_time || '', 
+          env_weather || '', 
+          env_forecast || '', 
+          date || '', 
+          status, 
+          debrief || '', 
+          id
+        );
+      } else {
+        db.prepare(`
+          UPDATE missions SET 
+            title = ?, location = ?, situation = ?, objectives = ?, 
+            env_terrain = ?, env_time = ?, env_weather = ?, env_forecast = ?, 
+            date = ?, debrief = ? 
+          WHERE id = ?
+        `).run(
+          title || '', 
+          location || '', 
+          situation || '', 
+          objectives || '[]', 
+          env_terrain || '', 
+          env_time || '', 
+          env_weather || '', 
+          env_forecast || '', 
+          date || '', 
+          debrief || '', 
+          id
+        );
+      }
+      broadcast({ type: 'UPDATE_MISSIONS' });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Error updating mission:", err);
+      res.status(500).json({ error: "Failed to update mission" });
     }
-    res.json({ success: true });
   });
 
   app.put("/api/missions/:id/complete", isAdmin, (req, res) => {
@@ -623,6 +733,24 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Failed to sign up" });
+    }
+  });
+
+  // API 404 handler - ensure /api routes always return JSON
+  app.use("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+  });
+
+  // Global error handler for API
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Unhandled error:", err);
+    if (req.path.startsWith("/api/")) {
+      res.status(err.status || 500).json({ 
+        error: err.message || "Internal Server Error",
+        stack: process.env.NODE_ENV === "development" ? err.stack : undefined
+      });
+    } else {
+      next(err);
     }
   });
 

@@ -36,6 +36,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import AttendanceCalendar from './components/AttendanceCalendar';
 
 interface Mission {
   id: number;
@@ -708,6 +709,7 @@ export default function App() {
   const [view, setView] = useState<'briefing' | 'roster' | 'status' | 'login' | 'accounts' | 'history' | 'documentation' | 'landing'>('login');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [attendanceView, setAttendanceView] = useState<'current' | 'calendar'>('current');
   const [user, setUser] = useState<User | null>(null);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -901,8 +903,19 @@ export default function App() {
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/users');
-      const data = await res.json();
-      setUsers(data);
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data);
+      } else {
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          console.error('Failed to fetch users:', data.error);
+        } else {
+          const text = await res.text();
+          console.error('Failed to fetch users (HTML):', text);
+        }
+      }
     } catch (err) {
       console.error('Failed to fetch users', err);
     }
@@ -924,12 +937,19 @@ export default function App() {
         setEditingUser(null);
         setIsCreatingUser(false);
       } else {
-        const data = await res.json();
-        alert(`Failed to save user: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to save user: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to save user: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to save user', err);
-      alert('Failed to save user. Check console for details.');
+      alert('Failed to save user. Network error or server is down.');
     }
   };
 
@@ -941,12 +961,19 @@ export default function App() {
         fetchUsers();
         setEditingUser(null);
       } else {
-        const data = await res.json();
-        alert(`Failed to delete user: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to delete user: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to delete user: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to delete user', err);
-      alert('Failed to delete user. Check console for details.');
+      alert('Failed to delete user. Network error or server is down.');
     }
   };
 
@@ -1058,6 +1085,10 @@ export default function App() {
     
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      if (data.type === 'UPDATE_ROSTER') fetchRoster();
+      if (data.type === 'UPDATE_MISSIONS') fetchMissions();
+      if (data.type === 'UPDATE_USERS') fetchUsers();
+      
       if (data.type === 'SIGNUP_UPDATE') {
         setAllAttendance(prev => {
           const index = prev.findIndex(a => a.id === data.entry.id);
@@ -1103,9 +1134,13 @@ export default function App() {
   const fetchMissions = async () => {
     try {
       const res = await fetch('/api/missions');
-      const data = await res.json();
-      setMissions(data);
-      if (data.length > 0) setSelectedMission(data[0]);
+      if (res.ok) {
+        const data = await res.json();
+        setMissions(data);
+        if (data.length > 0 && !selectedMission) setSelectedMission(data[0]);
+      } else {
+        console.error('Failed to fetch missions:', res.statusText);
+      }
     } catch (err) {
       console.error('Failed to fetch missions', err);
     }
@@ -1114,8 +1149,12 @@ export default function App() {
   const fetchRoster = async () => {
     try {
       const res = await fetch('/api/roster');
-      const data = await res.json();
-      setRoster(data);
+      if (res.ok) {
+        const data = await res.json();
+        setRoster(data);
+      } else {
+        console.error('Failed to fetch roster:', res.statusText);
+      }
     } catch (err) {
       console.error('Failed to fetch roster', err);
     }
@@ -1212,12 +1251,19 @@ export default function App() {
         setEditingMember(null);
         setIsCreatingMember(false);
       } else {
-        const data = await res.json();
-        alert(`Failed to save member: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to save member: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to save member: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to save member', err);
-      alert('Failed to save member. Check console for details.');
+      alert('Failed to save member. Network error or server is down.');
     }
   };
 
@@ -1229,12 +1275,19 @@ export default function App() {
         fetchRoster();
         setEditingMember(null);
       } else {
-        const data = await res.json();
-        alert(`Failed to delete member: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to delete member: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to delete member: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to delete member', err);
-      alert('Failed to delete member. Check console for details.');
+      alert('Failed to delete member. Network error or server is down.');
     }
   };
 
@@ -1254,12 +1307,19 @@ export default function App() {
         setEditingMission(null);
         setIsCreatingMission(false);
       } else {
-        const data = await res.json();
-        alert(`Failed to save mission: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to save mission: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to save mission: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to save mission', err);
-      alert('Failed to save mission. Check console for details.');
+      alert('Failed to save mission. Network error or server is down.');
     }
   };
 
@@ -1288,12 +1348,19 @@ export default function App() {
         setEditingMission(null);
         if (selectedMission?.id === id) setSelectedMission(null);
       } else {
-        const data = await res.json();
-        alert(`Failed to delete mission: ${data.error || res.statusText}`);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          alert(`Failed to delete mission: ${data.error || res.statusText}`);
+        } else {
+          const text = await res.text();
+          console.error("Server returned non-JSON error:", text);
+          alert(`Failed to delete mission: Server error (${res.status}). Check console for details.`);
+        }
       }
     } catch (err) {
       console.error('Failed to delete mission', err);
-      alert('Failed to delete mission. Check console for details.');
+      alert('Failed to delete mission. Network error or server is down.');
     }
   };
 
@@ -1356,12 +1423,12 @@ export default function App() {
     return (
       <div className="space-y-0 border border-slate-800 bg-black/40 shadow-2xl">
         {/* Squad Header */}
-        <div className={`${isHQ ? 'bg-blue-800' : 'bg-slate-800'} p-1.5 text-center font-black tracking-[0.4em] text-white text-xs uppercase border-b border-slate-700`}>
+        <div className={`${isHQ ? 'bg-slate-800' : 'bg-slate-800'} p-1.5 text-center font-black tracking-[0.4em] text-white text-xs uppercase border-b border-slate-700`}>
           {squadId}
         </div>
 
         {/* Command / HQ Elements */}
-        {(command.length > 0 || squadId === '1-1' || squadId === '1-2' || squadId === '1-HQ') && renderSortableList(command, 'HQ Section', 'bg-blue-900/40', `squad:${squadId}:team:Command`)}
+        {(command.length > 0 || squadId === '1-1' || squadId === '1-2' || squadId === '1-HQ') && renderSortableList(command, 'HQ Section', 'bg-blue-800', `squad:${squadId}:team:Command`)}
 
         {/* Alpha & Bravo Teams */}
         {!isHQ && !isReserves && (
@@ -1701,10 +1768,35 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+
+                  <div className="flex items-center gap-1 bg-slate-900/40 border border-slate-800 p-1 rounded">
+                    <button
+                      onClick={() => setAttendanceView('current')}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
+                        attendanceView === 'current' 
+                          ? 'bg-cyan-500/20 text-cyan-400' 
+                          : 'text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      Manifest
+                    </button>
+                    <button
+                      onClick={() => setAttendanceView('calendar')}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
+                        attendanceView === 'calendar' 
+                          ? 'bg-cyan-500/20 text-cyan-400' 
+                          : 'text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      Calendar
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+              {attendanceView === 'current' ? (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
                 {SQUADS.map(squadId => {
                   const squadMembers = roster.filter(m => m.squad === squadId && m.name.toLowerCase().includes(searchTerm.toLowerCase()));
                   const filteredMembers = squadMembers.filter(m => {
@@ -1812,6 +1904,10 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </>
+          ) : (
+            <AttendanceCalendar roster={roster} missions={missions} allAttendance={allAttendance} />
+          )}
 
               {/* Status Legend */}
               <div className="flex flex-wrap gap-x-6 gap-y-3 p-4 bg-slate-900/20 border border-slate-800 rounded">
