@@ -23,12 +23,15 @@ interface Attendance {
   mission_id: number;
   name: string;
   status: string;
+  squad?: string;
+  role?: string;
 }
 
 interface Props {
   roster: RosterMember[];
   missions: Mission[];
   allAttendance: Attendance[];
+  showDischargedOnly?: boolean;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -76,8 +79,20 @@ const getTeamLabel = (squad: string, team: string) => {
   return team || squad;
 };
 
-export default function AttendanceCalendar({ roster, missions, allAttendance }: Props) {
+export default function AttendanceCalendar({ roster, missions, allAttendance, showDischargedOnly }: Props) {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+
+  const currentSundayStr = useMemo(() => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayOfWeek = d.getDay();
+    const sunday = new Date(d);
+    sunday.setDate(d.getDate() - dayOfWeek);
+    const y = sunday.getFullYear();
+    const m = String(sunday.getMonth() + 1).padStart(2, '0');
+    const d2 = String(sunday.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d2}`;
+  }, []);
 
   const sundaysByMonth = useMemo(() => {
     const sundays = [];
@@ -116,7 +131,7 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
     const rosterNames = new Set(roster.map(m => m.name));
     const dischargedNames = new Set<string>();
     allAttendance.forEach(a => {
-      if (!rosterNames.has(a.name) && !a.name.includes('(Guest)')) {
+      if (!rosterNames.has(a.name) && !a.name.includes('(Guest)') && a.squad !== 'Guest') {
         dischargedNames.add(a.name);
       }
     });
@@ -132,7 +147,7 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
       display_order: 0
     }));
 
-    const allMembers = [...roster, ...dischargedMembers];
+    const allMembers = showDischargedOnly ? dischargedMembers : roster;
 
     allMembers.forEach(member => {
       const memberAttendance = allAttendance.filter(a => a.name === member.name);
@@ -153,11 +168,23 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
       });
     });
     return { data, dischargedMembers };
-  }, [roster, allAttendance, missions]);
+  }, [roster, allAttendance, missions, showDischargedOnly]);
 
   // Group roster by squad and team
   const groupedRoster = useMemo(() => {
     const groups: { squad: string, team: string, members: RosterMember[] }[] = [];
+    
+    if (showDischargedOnly) {
+      if (memberAttendanceData.dischargedMembers.length > 0) {
+        groups.push({
+          squad: 'Attendance History (Discharged)',
+          team: 'Attendance History (Discharged)',
+          members: memberAttendanceData.dischargedMembers.sort((a, b) => a.name.localeCompare(b.name))
+        });
+      }
+      return groups;
+    }
+
     let currentSquad = '';
     let currentTeam = '';
     let currentGroup: RosterMember[] = [];
@@ -181,22 +208,32 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
       groups.push({ squad: currentSquad, team: currentTeam, members: currentGroup });
     }
     
-    // Add discharged members as a separate group
-    if (memberAttendanceData.dischargedMembers.length > 0) {
-      groups.push({
-        squad: 'Attendance History (Discharged)',
-        team: 'Attendance History (Discharged)',
-        members: memberAttendanceData.dischargedMembers.sort((a, b) => a.name.localeCompare(b.name))
-      });
-    }
-    
     return groups;
-  }, [roster, memberAttendanceData.dischargedMembers]);
+  }, [roster, memberAttendanceData.dischargedMembers, showDischargedOnly]);
+
+  const guestsBySunday = useMemo(() => {
+    const grouped: Record<string, string[]> = {};
+    Object.keys(missionsBySunday).forEach(sundayStr => {
+      const missionsOnSunday = missionsBySunday[sundayStr];
+      const missionIds = missionsOnSunday.map(m => m.id);
+      
+      const guestsForWeek = new Set<string>();
+      allAttendance.forEach(a => {
+        if (missionIds.includes(a.mission_id) && (a.squad === 'Guest' || a.name.includes('(Guest)'))) {
+          guestsForWeek.add(a.name);
+        }
+      });
+      grouped[sundayStr] = Array.from(guestsForWeek).slice(0, 4);
+    });
+    return grouped;
+  }, [missionsBySunday, allAttendance]);
 
   return (
     <div className="space-y-4 bg-slate-900/40 border border-slate-800 rounded-lg p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-black tracking-tighter text-white uppercase italic">Attendance Calendar</h2>
+        <h2 className="text-xl font-black tracking-tighter text-white uppercase italic">
+          {showDischargedOnly ? 'Attendance History (Discharged)' : 'Attendance Calendar'}
+        </h2>
         <div className="flex items-center gap-4">
           <button onClick={() => setSelectedYear(y => y - 1)} className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors">
             <ChevronLeft className="w-5 h-5" />
@@ -222,7 +259,9 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
                       colSpan={sundays.length} 
                       className="border-b border-slate-800/50 px-2 py-1.5 font-black text-center text-slate-300 uppercase tracking-widest text-[10px]"
                     >
-                      {monthName}
+                      <div className="flex items-center justify-center gap-1">
+                        {monthName}
+                      </div>
                     </th>
                     {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
                       <th className="w-2 border-b border-slate-800/50" rowSpan={2}></th>
@@ -232,15 +271,26 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
               })}
             </tr>
             <tr>
-              {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => (
-                <React.Fragment key={month + '-dates'}>
-                  {sundays.map((sunday) => (
-                    <th key={sunday.toISOString()} className="border-b border-slate-800/50 px-1 py-1.5 font-bold text-center w-8 text-slate-500 text-[9px]">
-                      {String(sunday.getDate()).padStart(2, '0')}
-                    </th>
-                  ))}
-                </React.Fragment>
-              ))}
+              {Object.entries(sundaysByMonth).map(([month, sundays]) => {
+                return (
+                  <React.Fragment key={month + '-dates'}>
+                    {sundays.map((sunday) => {
+                      const sundayStr = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+                      const isCurrentWeek = sundayStr === currentSundayStr;
+                      return (
+                        <th 
+                          key={sunday.toISOString()} 
+                          className={`border-b border-slate-800/50 px-1 py-1.5 font-bold text-center w-8 text-[9px] transition-colors ${
+                            isCurrentWeek ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-500'
+                          }`}
+                        >
+                          {String(sunday.getDate()).padStart(2, '0')}
+                        </th>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50">
@@ -269,54 +319,116 @@ export default function AttendanceCalendar({ roster, missions, allAttendance }: 
                     <td className="font-bold px-3 py-1.5 whitespace-nowrap text-slate-200 border-r border-slate-800/50">
                       {member.name}
                     </td>
-                    {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => (
-                      <React.Fragment key={month}>
-                        {sundays.map((sunday) => {
-                          const sundayStr = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
-                          const missionsOnSunday = missionsBySunday[sundayStr];
-                          const mission = missionsOnSunday ? missionsOnSunday[0] : null;
-                          
-                          let cellContent = null;
-                          let cellColor = 'transparent';
-                          let textColor = 'inherit';
+                    {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                      return (
+                        <React.Fragment key={month}>
+                          {sundays.map((sunday) => {
+                            const sundayStr = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+                            const isCurrentWeek = sundayStr === currentSundayStr;
+                            const missionsOnSunday = missionsBySunday[sundayStr];
+                            const mission = missionsOnSunday ? missionsOnSunday[0] : null;
+                            
+                            let cellContent = null;
+                            let cellColor = 'transparent';
+                            let textColor = 'inherit';
 
-                          if (mission) {
-                            cellColor = 'rgba(30, 41, 59, 0.5)'; // slate-800/50
-                            const attendanceRecord = memberAttendanceData.data[member.name]?.find(a => a.mission_id === mission.id);
-                            if (attendanceRecord) {
-                              cellColor = STATUS_COLORS[attendanceRecord.status] || cellColor;
-                              if (attendanceRecord.status === 'Attended' || attendanceRecord.status === 'Partial Attendance') {
-                                cellContent = attendanceRecord.cumulativeCount;
-                                textColor = '#000000'; // Dark text for light backgrounds
-                              } else {
-                                textColor = 'rgba(0,0,0,0.6)'; // Slightly faded dark text for other statuses
+                            if (mission) {
+                              cellColor = 'rgba(30, 41, 59, 0.5)'; // slate-800/50
+                              const attendanceRecord = memberAttendanceData.data[member.name]?.find(a => a.mission_id === mission.id);
+                              if (attendanceRecord) {
+                                cellColor = STATUS_COLORS[attendanceRecord.status] || cellColor;
+                                if (attendanceRecord.status === 'Attended' || attendanceRecord.status === 'Partial Attendance') {
+                                  cellContent = attendanceRecord.cumulativeCount;
+                                  textColor = '#000000'; // Dark text for light backgrounds
+                                } else {
+                                  textColor = 'rgba(0,0,0,0.6)'; // Slightly faded dark text for other statuses
+                                }
                               }
                             }
-                          }
 
-                          return (
-                            <td 
-                              key={sunday.toISOString()} 
-                              className="text-center font-bold relative p-0.5"
-                            >
-                              <div 
-                                className="w-full h-full min-h-[24px] flex items-center justify-center rounded-sm"
-                                style={{ backgroundColor: cellColor, color: textColor }}
+                            return (
+                              <td 
+                                key={sunday.toISOString()} 
+                                className={`text-center font-bold relative p-0.5 ${isCurrentWeek ? 'bg-cyan-500/5' : ''}`}
                               >
-                                {cellContent}
-                              </div>
-                            </td>
-                          );
-                        })}
-                        {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
-                          <td className="w-2"></td>
-                        )}
-                      </React.Fragment>
-                    ))}
+                                <div 
+                                  className={`w-full h-full min-h-[24px] flex items-center justify-center rounded-sm ${isCurrentWeek ? 'ring-1 ring-cyan-500/30' : ''}`}
+                                  style={{ backgroundColor: cellColor, color: textColor }}
+                                >
+                                  {cellContent}
+                                </div>
+                              </td>
+                            );
+                          })}
+                          {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                            <td className="w-2"></td>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </tr>
                 ))}
               </React.Fragment>
             ))}
+            {/* Guests Section */}
+            {!showDischargedOnly && (
+              <>
+                <tr className="h-6 !border-transparent bg-transparent">
+                  <td colSpan={2 + Object.values(sundaysByMonth).flat().length + Object.keys(sundaysByMonth).length - 1}></td>
+                </tr>
+                <tr>
+                  <td 
+                    colSpan={2} 
+                    className="bg-slate-900/80 text-slate-500 font-black text-left pl-4 py-3 uppercase tracking-[0.3em] border-y border-slate-800"
+                  >
+                    Guests
+                  </td>
+                  {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                    return (
+                      <React.Fragment key={`guest-header-${month}`}>
+                        <td colSpan={sundays.length} className="border-y border-slate-800"></td>
+                        {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                          <td className="w-2"></td>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tr>
+                {[0, 1, 2, 3].map(rowIdx => (
+                  <tr key={`guest-row-${rowIdx}`} className="hover:bg-slate-800/30 transition-colors">
+                    <td className="border-r border-slate-800/50"></td>
+                    <td className="font-bold px-3 py-1.5 whitespace-nowrap text-slate-200 border-r border-slate-800/50">
+                    </td>
+                    {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                      return (
+                        <React.Fragment key={`guest-cells-${month}`}>
+                          {sundays.map((sunday) => {
+                            const sundayStr = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+                            const isCurrentWeek = sundayStr === currentSundayStr;
+                            const guests = guestsBySunday[sundayStr] || [];
+                            const guestName = guests[rowIdx];
+                            
+                            return (
+                              <td 
+                                key={`guest-${sunday.toISOString()}-${rowIdx}`} 
+                                className={`text-center font-bold p-0.5 border-b border-slate-800/50 ${isCurrentWeek ? 'bg-cyan-500/5' : ''}`}
+                              >
+                                <div className={`w-full h-full min-h-[24px] flex items-center justify-center rounded-sm bg-slate-800/20 text-slate-300 text-[9px] truncate px-1 ${isCurrentWeek ? 'ring-1 ring-cyan-500/30' : ''}`}>
+                                  {guestName || ''}
+                                </div>
+                              </td>
+                            );
+                          })}
+                          {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                            <td className="w-2"></td>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </>
+            )}
           </tbody>
         </table>
       </div>

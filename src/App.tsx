@@ -205,7 +205,7 @@ function MemberModal({ member, onClose, onSave, onDelete }: {
                 onChange={e => setFormData({ ...formData, team: e.target.value })}
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono focus:border-cyan-500/50 outline-none transition-all"
               >
-                {['Command', 'Medical', 'Alpha', 'Bravo', 'Reserves'].map(t => <option key={t} value={t}>{t}</option>)}
+                {['Command', 'Alpha', 'Bravo', 'Reserves'].map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
           </div>
@@ -709,8 +709,13 @@ export default function App() {
   const [view, setView] = useState<'briefing' | 'roster' | 'status' | 'login' | 'accounts' | 'history' | 'documentation' | 'landing'>('login');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
-  const [attendanceView, setAttendanceView] = useState<'current' | 'calendar'>('current');
+  const [attendanceView, setAttendanceView] = useState<'calendar' | 'discharged'>('calendar');
   const [user, setUser] = useState<User | null>(null);
+  const userRef = useRef<User | null>(null);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [adminUsername, setAdminUsername] = useState('');
@@ -1079,6 +1084,20 @@ export default function App() {
     }
   };
 
+  const handleRemoveAttendance = async (attendanceId: number) => {
+    if (!confirm('Are you sure you want to remove this entry from the manifest?')) return;
+    try {
+      const res = await fetch(`/api/attendance/${attendanceId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        // State will be updated via WebSocket broadcast
+      }
+    } catch (err) {
+      console.error('Failed to remove attendance', err);
+    }
+  };
+
   const setupWebSocket = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(`${protocol}//${window.location.host}`);
@@ -1087,7 +1106,7 @@ export default function App() {
       const data = JSON.parse(event.data);
       if (data.type === 'UPDATE_ROSTER') fetchRoster();
       if (data.type === 'UPDATE_MISSIONS') fetchMissions();
-      if (data.type === 'UPDATE_USERS') fetchUsers();
+      if (data.type === 'UPDATE_USERS' && userRef.current?.role === 'admin') fetchUsers();
       
       if (data.type === 'SIGNUP_UPDATE') {
         setAllAttendance(prev => {
@@ -1120,6 +1139,16 @@ export default function App() {
             }
             return [data.entry, ...prev];
           });
+        }
+      }
+
+      if (data.type === 'SIGNUP_DELETE') {
+        setAllAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
+        if (selectedMission && Number(data.missionId) === selectedMission.id) {
+          setAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
+        }
+        if (selectedHistoryMission && Number(data.missionId) === selectedHistoryMission.id) {
+          setHistoryAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
         }
       }
     };
@@ -1406,7 +1435,7 @@ export default function App() {
 
   const renderSquadORBAT = (squadId: string) => {
     const squadMembers = roster.filter(m => m.squad === squadId);
-    const command = squadMembers.filter(m => m.team === 'Command' || m.team === 'Medical');
+    const command = squadMembers.filter(m => m.team === 'Command');
     const alpha = squadMembers.filter(m => m.team === 'Alpha');
     const bravo = squadMembers.filter(m => m.team === 'Bravo');
     const reserves = squadMembers.filter(m => m.team === 'Reserves');
@@ -1743,43 +1772,7 @@ export default function App() {
                   <p className="text-[10px] font-mono text-slate-500 uppercase mt-1">Real-time Personnel Tracking // Mission {selectedMission?.id || 'N/A'}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600" />
-                    <input 
-                      type="text" 
-                      placeholder="Search Personnel..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="bg-slate-900/40 border border-slate-800 rounded px-9 py-1.5 text-[11px] font-mono focus:outline-none focus:border-cyan-500/50 transition-all w-48"
-                    />
-                  </div>
                   <div className="flex items-center gap-1 bg-slate-900/40 border border-slate-800 p-1 rounded">
-                    {['All', 'Attending', 'Absent'].map(f => (
-                      <button
-                        key={f}
-                        onClick={() => setStatusFilter(f)}
-                        className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
-                          statusFilter === f 
-                            ? 'bg-cyan-500/20 text-cyan-400' 
-                            : 'text-slate-500 hover:text-slate-300'
-                        }`}
-                      >
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex items-center gap-1 bg-slate-900/40 border border-slate-800 p-1 rounded">
-                    <button
-                      onClick={() => setAttendanceView('current')}
-                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
-                        attendanceView === 'current' 
-                          ? 'bg-cyan-500/20 text-cyan-400' 
-                          : 'text-slate-500 hover:text-slate-300'
-                      }`}
-                    >
-                      Manifest
-                    </button>
                     <button
                       onClick={() => setAttendanceView('calendar')}
                       className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
@@ -1790,167 +1783,25 @@ export default function App() {
                     >
                       Calendar
                     </button>
+                    <button
+                      onClick={() => setAttendanceView('discharged')}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-all ${
+                        attendanceView === 'discharged' 
+                          ? 'bg-cyan-500/20 text-cyan-400' 
+                          : 'text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      Discharged
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {attendanceView === 'current' ? (
-                <>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-                {SQUADS.map(squadId => {
-                  const squadMembers = roster.filter(m => m.squad === squadId && m.name.toLowerCase().includes(searchTerm.toLowerCase()));
-                  const filteredMembers = squadMembers.filter(m => {
-                    if (statusFilter === 'All') return true;
-                    const s = getMemberStatus(m.name)?.status || 'Awaiting Data';
-                    if (statusFilter === 'Attending') return s.includes('Attend');
-                    if (statusFilter === 'Absent') return s.includes('Absent');
-                    return true;
-                  });
-
-                  if (filteredMembers.length === 0 && searchTerm) return null;
-
-                  return (
-                    <div key={squadId} className="space-y-3">
-                      <div className="flex items-center justify-between px-1">
-                        <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-500/70">{squadId}</h3>
-                        <span className="text-[10px] font-mono text-slate-600">{filteredMembers.length} Personnel</span>
-                      </div>
-                      <div className="grid grid-cols-1 gap-2">
-                        {filteredMembers.map(member => {
-                          const memberStatus = getMemberStatus(member.name);
-                          const stats = getMemberStats(member.name);
-                          return (
-                            <div key={member.id} className="flex items-center gap-3 bg-slate-900/40 border border-slate-800 p-2.5 rounded group hover:border-cyan-500/30 transition-all">
-                              <div 
-                                className="w-1 h-8 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]" 
-                                style={{ backgroundColor: memberStatus ? STATUS_COLORS[memberStatus.status] : '#1e293b' }} 
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="text-sm font-bold text-slate-200 truncate">{member.name}</div>
-                                  <div className="text-[10px] font-mono text-slate-600 uppercase">{member.rank}</div>
-                                </div>
-                                <div className="flex items-center justify-between mt-0.5">
-                                  <div className="text-xs font-mono text-slate-500 uppercase truncate">{member.role}</div>
-                                  <div className="text-[10px] font-mono text-slate-500">{stats.completed} OPS</div>
-                                </div>
-                              </div>
-                              <div className="flex flex-col items-end gap-1">
-                                {isAdmin && memberStatus ? (
-                                  <select 
-                                    value={memberStatus.status}
-                                    onChange={(e) => handleUpdateAttendance(memberStatus.id, e.target.value)}
-                                    className="bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400 uppercase tracking-tighter rounded px-1 py-0.5 focus:outline-none focus:border-cyan-500/50"
-                                  >
-                                    {Object.keys(STATUS_COLORS).map(s => (
-                                      <option key={s} value={s}>{s}</option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tighter w-16 text-right">
-                                    {memberStatus ? memberStatus.status : 'Awaiting'}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Guest Section in Attendance */}
-                {attendance.filter(a => a.name.includes('(Guest)')).length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between px-1">
-                      <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500">GUEST PERSONNEL</h3>
-                      <span className="text-xs font-mono text-slate-600">{attendance.filter(a => a.name.includes('(Guest)')).length} Personnel</span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      {attendance.filter(a => a.name.includes('(Guest)')).map(entry => (
-                        <div key={entry.id} className="flex items-center gap-3 bg-slate-900/40 border border-slate-800 p-2.5 rounded group hover:border-cyan-500/30 transition-all">
-                          <div 
-                            className="w-1 h-8 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]" 
-                            style={{ backgroundColor: STATUS_COLORS[entry.status] || '#1e293b' }} 
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-bold text-slate-200 truncate">{entry.name}</div>
-                              <div className="text-[10px] font-mono text-slate-600 uppercase">GUEST</div>
-                            </div>
-                            <div className="text-xs font-mono text-slate-500 uppercase truncate">UNASSIGNED</div>
-                          </div>
-                          <div className="flex flex-col items-end gap-1">
-                            {isAdmin ? (
-                              <select 
-                                value={entry.status}
-                                onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
-                                className="bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400 uppercase tracking-tighter rounded px-1 py-0.5 focus:outline-none focus:border-cyan-500/50"
-                              >
-                                {Object.keys(STATUS_COLORS).map(s => (
-                                  <option key={s} value={s}>{s}</option>
-                                ))}
-                              </select>
-                            ) : (
-                              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tighter w-16 text-right">
-                                {entry.status}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* Discharged Section in Attendance */}
-                {attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between px-1">
-                      <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500">ATTENDANCE HISTORY (DISCHARGED)</h3>
-                      <span className="text-xs font-mono text-slate-600">{attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).length} Personnel</span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      {attendance.filter(a => !roster.some(r => r.name === a.name) && !a.name.includes('(Guest)')).map(entry => (
-                        <div key={entry.id} className="flex items-center gap-3 bg-slate-900/40 border border-slate-800 p-2.5 rounded group hover:border-cyan-500/30 transition-all">
-                          <div 
-                            className="w-1 h-8 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]" 
-                            style={{ backgroundColor: STATUS_COLORS[entry.status] || '#1e293b' }} 
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-bold text-slate-200 truncate">{entry.name}</div>
-                              <div className="text-[10px] font-mono text-slate-600 uppercase">DISCHARGED</div>
-                            </div>
-                            <div className="text-xs font-mono text-slate-500 uppercase truncate">UNASSIGNED</div>
-                          </div>
-                          <div className="flex flex-col items-end gap-1">
-                            {isAdmin ? (
-                              <select 
-                                value={entry.status}
-                                onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
-                                className="bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400 uppercase tracking-tighter rounded px-1 py-0.5 focus:outline-none focus:border-cyan-500/50"
-                              >
-                                {Object.keys(STATUS_COLORS).map(s => (
-                                  <option key={s} value={s}>{s}</option>
-                                ))}
-                              </select>
-                            ) : (
-                              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tighter w-16 text-right">
-                                {entry.status}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <AttendanceCalendar roster={roster} missions={missions} allAttendance={allAttendance} />
-          )}
+              {attendanceView === 'calendar' ? (
+                <AttendanceCalendar roster={roster} missions={missions} allAttendance={allAttendance} />
+              ) : (
+                <AttendanceCalendar roster={roster} missions={missions} allAttendance={allAttendance} showDischargedOnly={true} />
+              )}
 
               {/* Status Legend */}
               <div className="flex flex-wrap gap-x-6 gap-y-3 p-4 bg-slate-900/20 border border-slate-800 rounded">

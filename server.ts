@@ -121,7 +121,7 @@ if (rosterCount.count === 0) {
     // 1-HQ
     { name: "A.Stone", rank: "1st Lieutenant", squad: "1-HQ", team: "Command", role: "Commanding Officer", mos_abr: "CO" },
     { name: "B.Gepard", rank: "2nd Lieutenant", squad: "1-HQ", team: "Command", role: "Executive Officer", mos_abr: "XO" },
-    { name: "B.Reyes", rank: "Master Sergeant", squad: "1-HQ", team: "Medical", role: "Platoon Corpsman", mos_abr: "PC" },
+    { name: "B.Reyes", rank: "Master Sergeant", squad: "1-HQ", team: "Command", role: "Platoon Corpsman", mos_abr: "PC" },
     
     // 1-1 HQ
     { name: "A.Fish", rank: "1st Lieutenant", squad: "1-1", team: "Command", role: "Squad Leader", mos_abr: "SL" },
@@ -310,13 +310,12 @@ async function startServer() {
       }
     } else {
       // If user exists, check password UNLESS it's a special admin
-      // For now, do not require any passwords to login as requested.
-      // if (!isSpecialAdmin) {
-      //   const valid = bcrypt.compareSync(password, user.password);
-      //   if (!valid) {
-      //     return res.status(401).json({ error: "Invalid credentials" });
-      //   }
-      // }
+      if (!isSpecialAdmin) {
+        const valid = bcrypt.compareSync(password, user.password);
+        if (!valid) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
+      }
     }
     
     (req.session as any).userId = user.id;
@@ -694,6 +693,29 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.delete("/api/attendance/:id", isAdmin, (req, res) => {
+    const { id } = req.params;
+    const entry = db.prepare("SELECT * FROM attendance WHERE id = ?").get(id);
+    if (entry) {
+      db.prepare("DELETE FROM attendance WHERE id = ?").run(id);
+      broadcast({ type: 'SIGNUP_DELETE', id, missionId: entry.mission_id });
+    }
+    res.json({ success: true });
+  });
+
+  const getSundayOfWeek = (dateString: string) => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const d = new Date(year, month - 1, day);
+    const dayOfWeek = d.getDay();
+    const sunday = new Date(d);
+    sunday.setDate(d.getDate() - dayOfWeek);
+    
+    const y = sunday.getFullYear();
+    const m = String(sunday.getMonth() + 1).padStart(2, '0');
+    const d2 = String(sunday.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d2}`;
+  };
+
   app.post("/api/missions/:id/signup", (req, res) => {
     const { name, status } = req.body;
     let { role, squad } = req.body;
@@ -716,6 +738,33 @@ async function startServer() {
     }
 
     try {
+      if (squad === "Guest") {
+        const mission = db.prepare("SELECT date FROM missions WHERE id = ?").get(missionId) as { date: string } | undefined;
+        if (mission) {
+          const sundayStr = getSundayOfWeek(mission.date);
+          const [sY, sM, sD] = sundayStr.split('-').map(Number);
+          const sundayDate = new Date(sY, sM - 1, sD);
+          const saturdayDate = new Date(sundayDate);
+          saturdayDate.setDate(saturdayDate.getDate() + 6);
+          const saturdayStr = `${saturdayDate.getFullYear()}-${String(saturdayDate.getMonth() + 1).padStart(2, '0')}-${String(saturdayDate.getDate()).padStart(2, '0')}`;
+
+          const missionsInWeek = db.prepare("SELECT id FROM missions WHERE date >= ? AND date <= ?").all(sundayStr, saturdayStr) as { id: number }[];
+          const missionIdsInWeek = missionsInWeek.map(m => m.id);
+
+          if (missionIdsInWeek.length > 0) {
+            const guestsInWeek = db.prepare(`
+              SELECT DISTINCT name FROM attendance 
+              WHERE mission_id IN (${missionIdsInWeek.join(',')}) 
+              AND squad = 'Guest'
+            `).all() as { name: string }[];
+
+            if (!guestsInWeek.some(g => g.name === name) && guestsInWeek.length >= 4) {
+              return res.status(400).json({ error: "Guest slots are full for this week (max 4)." });
+            }
+          }
+        }
+      }
+
       // Check if already signed up
       const existing = db.prepare("SELECT id FROM attendance WHERE mission_id = ? AND name = ?").get(missionId, name) as { id: number } | undefined;
       
