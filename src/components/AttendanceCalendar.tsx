@@ -10,6 +10,7 @@ interface RosterMember {
   role: string;
   mos_abr: string;
   display_order: number;
+  loa_until?: string;
 }
 
 interface Mission {

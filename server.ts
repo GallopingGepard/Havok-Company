@@ -87,6 +87,12 @@ try {
   // Column might already exist
 }
 
+try {
+  db.exec("ALTER TABLE roster ADD COLUMN loa_until TEXT;");
+} catch (e) {
+  // Column might already exist
+}
+
 // Add new mission columns if they don't exist
 const missionColumns = [
   "location", "situation", "objectives", 
@@ -447,18 +453,19 @@ async function startServer() {
 
   // Admin Roster Routes
   app.post("/api/roster", isAdmin, (req, res) => {
-    const { name, rank, squad, team, role, mos_abr } = req.body;
+    const { name, rank, squad, team, role, mos_abr, loa_until } = req.body;
     try {
       const maxOrder = db.prepare("SELECT MAX(display_order) as maxOrder FROM roster WHERE squad = ?").get(squad) as { maxOrder: number };
       const display_order = (maxOrder?.maxOrder || 0) + 1;
-      const result = db.prepare("INSERT INTO roster (name, rank, squad, team, role, mos_abr, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      const result = db.prepare("INSERT INTO roster (name, rank, squad, team, role, mos_abr, display_order, loa_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
         name || '', 
         rank || '', 
         squad || '', 
         team || '', 
         role || '', 
         mos_abr || '', 
-        display_order
+        display_order,
+        loa_until || null
       );
       broadcast({ type: 'UPDATE_ROSTER' });
       res.json({ id: result.lastInsertRowid });
@@ -490,18 +497,19 @@ async function startServer() {
 
   app.put("/api/roster/:id", isAdmin, (req, res) => {
     const { id } = req.params;
-    const { name, rank, squad, team, role, mos_abr } = req.body;
+    const { name, rank, squad, team, role, mos_abr, loa_until } = req.body;
     
     try {
       const oldMember = db.prepare("SELECT name FROM roster WHERE id = ?").get(id) as { name: string };
       
-      db.prepare("UPDATE roster SET name = ?, rank = ?, squad = ?, team = ?, role = ?, mos_abr = ? WHERE id = ?").run(
+      db.prepare("UPDATE roster SET name = ?, rank = ?, squad = ?, team = ?, role = ?, mos_abr = ?, loa_until = ? WHERE id = ?").run(
         name || '', 
         rank || '', 
         squad || '', 
         team || '', 
         role || '', 
         mos_abr || '', 
+        loa_until || null,
         id
       );
       
@@ -630,8 +638,55 @@ async function startServer() {
 
   app.put("/api/missions/:id/complete", isAdmin, (req, res) => {
     const { id } = req.params;
-    db.prepare("UPDATE missions SET status = 'completed' WHERE id = ?").run(id);
-    res.json({ success: true });
+    try {
+      const mission = db.prepare("SELECT * FROM missions WHERE id = ?").get(id) as any;
+      if (!mission) {
+        return res.status(404).json({ error: "Mission not found" });
+      }
+
+      db.prepare("UPDATE missions SET status = 'completed' WHERE id = ?").run(id);
+
+      // Automatic attendance logic
+      const roster = db.prepare("SELECT * FROM roster").all() as any[];
+      const attendance = db.prepare("SELECT * FROM attendance WHERE mission_id = ?").all(id) as any[];
+      const attendedNames = new Set(attendance.map(a => a.name));
+
+      const now = new Date();
+      const missionDate = new Date(mission.date);
+
+      roster.forEach(member => {
+        if (!attendedNames.has(member.name)) {
+          let status = "Absent (No Notice)";
+          
+          // Check LOA
+          if (member.loa_until) {
+            const loaUntil = new Date(member.loa_until);
+            if (loaUntil >= missionDate) {
+              status = "Absent (LOA)";
+            }
+          }
+
+          // Check Reserves (Squad 1-3 or Team Reserves)
+          if (status === "Absent (No Notice)") {
+            if (member.squad === '1-3' || member.team === 'Reserves') {
+              status = "Absent (Reserves)";
+            }
+          }
+
+          db.prepare(`
+            INSERT INTO attendance (mission_id, name, role, squad, status)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(id, member.name, member.role, member.squad, status);
+        }
+      });
+
+      broadcast({ type: 'UPDATE_MISSIONS' });
+      broadcast({ type: 'UPDATE_ATTENDANCE' });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Error completing mission:", err);
+      res.status(500).json({ error: "Failed to complete mission" });
+    }
   });
 
   app.delete("/api/missions/:id", isAdmin, (req, res) => {

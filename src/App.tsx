@@ -72,6 +72,7 @@ interface RosterMember {
   role: string;
   mos_abr: string;
   display_order: number;
+  loa_until?: string;
 }
 
 interface UserAccount {
@@ -217,6 +218,44 @@ function MemberModal({ member, onClose, onSave, onDelete }: {
               onChange={e => setFormData({ ...formData, role: e.target.value })}
               className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono focus:border-cyan-500/50 outline-none transition-all"
             />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Leave of Absence (LOA)</label>
+            <div className="grid grid-cols-4 gap-2">
+              {[0, 2, 3, 4].map(weeks => {
+                const isNone = weeks === 0;
+                const isActive = (isNone && !formData.loa_until) || (formData.loa_until && weeks > 0);
+                
+                // This is a bit tricky since we only store the end date.
+                // We'll just show buttons to set it.
+                return (
+                  <button
+                    key={weeks}
+                    onClick={() => {
+                      if (weeks === 0) {
+                        setFormData({ ...formData, loa_until: undefined });
+                      } else {
+                        const date = new Date();
+                        date.setDate(date.getDate() + (weeks * 7));
+                        setFormData({ ...formData, loa_until: date.toISOString().split('T')[0] });
+                      }
+                    }}
+                    className={`px-2 py-2 text-[10px] font-bold uppercase rounded border transition-all ${
+                      (isNone && !formData.loa_until) || (weeks > 0 && formData.loa_until && new Date(formData.loa_until) > new Date())
+                        ? 'bg-cyan-500/20 border-cyan-500 text-cyan-400'
+                        : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700'
+                    }`}
+                  >
+                    {isNone ? 'None' : `${weeks}W`}
+                  </button>
+                );
+              })}
+            </div>
+            {formData.loa_until && (
+              <div className="text-[9px] font-mono text-cyan-500/50 uppercase mt-1">
+                Active until: {new Date(formData.loa_until).toLocaleDateString()}
+              </div>
+            )}
           </div>
         </div>
         <div className="p-4 bg-slate-950/50 border-t border-slate-800 flex items-center justify-between">
