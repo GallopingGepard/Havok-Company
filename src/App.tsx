@@ -565,6 +565,7 @@ function AccountModal({ account, roster, onClose, onSave, onDelete }: {
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono focus:border-cyan-500/50 outline-none transition-all"
               >
                 <option value="member">Member</option>
+                <option value="guest">Guest</option>
                 <option value="admin">Administrator</option>
               </select>
             </div>
@@ -708,6 +709,7 @@ export default function App() {
   const [status, setStatus] = useState('Attending');
   const [view, setView] = useState<'briefing' | 'roster' | 'status' | 'login' | 'accounts' | 'history' | 'documentation' | 'landing'>('login');
   const [searchTerm, setSearchTerm] = useState('');
+  const [accountSearchTerm, setAccountSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [attendanceView, setAttendanceView] = useState<'calendar' | 'discharged'>('calendar');
   const [user, setUser] = useState<User | null>(null);
@@ -768,6 +770,12 @@ export default function App() {
       if (isAdmin) fetchUsers();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (view === 'accounts' && isAdmin) {
+      fetchUsers();
+    }
+  }, [view, isAdmin]);
 
   const checkAuth = async () => {
     try {
@@ -1769,7 +1777,7 @@ export default function App() {
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-black tracking-tighter text-white uppercase italic">Deployment Status Manifest</h2>
-                  <p className="text-[10px] font-mono text-slate-500 uppercase mt-1">Real-time Personnel Tracking // Mission {selectedMission?.id || 'N/A'}</p>
+                  <p className="text-[10px] font-mono text-slate-500 uppercase mt-1">Real-time Personnel Tracking // {selectedMission?.title || 'N/A'}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-1 bg-slate-900/40 border border-slate-800 p-1 rounded">
@@ -2010,7 +2018,7 @@ export default function App() {
               className="space-y-8"
             >
               <div className="bg-slate-900/40 border border-slate-800 rounded p-6">
-                <div className="flex items-center justify-between mb-8">
+                <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
                   <div className="flex items-center gap-4">
                     <div className="p-2 bg-cyan-500/10 rounded border border-cyan-500/30">
                       <Key className="w-5 h-5 text-cyan-400" />
@@ -2020,35 +2028,82 @@ export default function App() {
                       <div className="text-[10px] font-mono text-slate-500 uppercase">Personnel Access Control</div>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => setIsCreatingUser(true)}
-                    className="flex items-center gap-2 px-4 py-2 bg-cyan-600/20 border border-cyan-500/30 rounded text-cyan-400 text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-600/30 transition-all"
-                  >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    Create Account
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                      <input 
+                        type="text"
+                        placeholder="SEARCH ACCOUNTS..."
+                        value={accountSearchTerm}
+                        onChange={(e) => setAccountSearchTerm(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded pl-9 pr-4 py-2 text-[10px] font-mono text-white placeholder:text-slate-600 focus:border-cyan-500/50 outline-none transition-all w-64"
+                      />
+                    </div>
+                    <button 
+                      onClick={() => setIsCreatingUser(true)}
+                      className="flex items-center gap-2 px-4 py-2 bg-cyan-600/20 border border-cyan-500/30 rounded text-cyan-400 text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-600/30 transition-all"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      Create Account
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {users.map(account => (
-                    <div key={account.id} className="bg-slate-900/60 border border-slate-800 p-4 rounded flex items-center justify-between group hover:border-cyan-500/30 transition-all">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded flex items-center justify-center ${account.role === 'admin' ? 'bg-cyan-500/20 text-cyan-400' : 'bg-slate-800 text-slate-500'}`}>
-                          {account.role === 'admin' ? <Shield className="w-4 h-4" /> : <Users className="w-4 h-4" />}
+                  {users
+                    .filter(u => {
+                      const search = (accountSearchTerm || '').toLowerCase();
+                      return (
+                        (u.username || '').toLowerCase().includes(search) ||
+                        (roster.find(m => m.id === u.roster_id)?.name || '').toLowerCase().includes(search) ||
+                        (u.role || '').toLowerCase().includes(search)
+                      );
+                    })
+                    .sort((a, b) => {
+                      const rolePriority: Record<string, number> = { admin: 0, member: 1, guest: 2 };
+                      const priorityA = rolePriority[(a.role || '').toLowerCase()] ?? 99;
+                      const priorityB = rolePriority[(b.role || '').toLowerCase()] ?? 99;
+                      if (priorityA !== priorityB) return priorityA - priorityB;
+                      return (a.username || '').localeCompare(b.username || '');
+                    })
+                    .map(account => (
+                      <div key={account.id} className="bg-slate-900/60 border border-slate-800 p-4 rounded flex items-center justify-between group hover:border-cyan-500/30 transition-all">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded flex items-center justify-center ${account.role === 'admin' ? 'bg-cyan-500/20 text-cyan-400' : account.role === 'member' ? 'bg-slate-800 text-slate-300' : 'bg-slate-950/40 text-slate-600'}`}>
+                            {account.role === 'admin' ? <Shield className="w-4 h-4" /> : account.role === 'guest' ? <Users className="w-4 h-4 opacity-50" /> : <Users className="w-4 h-4" />}
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-white">{account.username}</div>
+                            <div className="text-[10px] font-mono text-slate-500 uppercase">{account.role} // {roster.find(m => m.id === account.roster_id)?.name || 'Unlinked'}</div>
+                          </div>
                         </div>
-                        <div>
-                          <div className="text-xs font-bold text-white">{account.username}</div>
-                          <div className="text-[10px] font-mono text-slate-500 uppercase">{account.role} // {roster.find(m => m.id === account.roster_id)?.name || 'Unlinked'}</div>
-                        </div>
+                        <button 
+                          onClick={() => setEditingUser(account)}
+                          className="p-1.5 hover:bg-slate-800 rounded text-slate-500 hover:text-cyan-400 transition-all"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      <button 
-                        onClick={() => setEditingUser(account)}
-                        className="p-1.5 hover:bg-slate-800 rounded text-slate-500 hover:text-cyan-400 transition-all"
-                      >
-                        <Settings className="w-3.5 h-3.5" />
-                      </button>
+                    ))}
+                  {users.length === 0 && (
+                    <div className="col-span-full py-12 text-center border border-dashed border-slate-800 rounded bg-slate-900/20">
+                      <Users className="w-8 h-8 text-slate-700 mx-auto mb-3 opacity-20" />
+                      <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">No accounts found in database</p>
                     </div>
-                  ))}
+                  )}
+                  {users.length > 0 && users.filter(u => {
+                    const search = (accountSearchTerm || '').toLowerCase();
+                    return (
+                      (u.username || '').toLowerCase().includes(search) ||
+                      (roster.find(m => m.id === u.roster_id)?.name || '').toLowerCase().includes(search) ||
+                      (u.role || '').toLowerCase().includes(search)
+                    );
+                  }).length === 0 && (
+                    <div className="col-span-full py-12 text-center border border-dashed border-slate-800 rounded bg-slate-900/20">
+                      <Search className="w-8 h-8 text-slate-700 mx-auto mb-3 opacity-20" />
+                      <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">No accounts match your search criteria</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </motion.div>
@@ -2072,100 +2127,107 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* UNIT RESOURCES */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 px-1">
-                    <Users className="w-4 h-4 text-cyan-500" />
-                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Unit Resources</h3>
+              <div className="relative">
+                {/* Vertical Divider */}
+                <div className="hidden lg:block absolute left-1/2 top-0 bottom-0 w-px bg-slate-800/50 -translate-x-1/2" />
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-24">
+                  {/* LEFT SIDE: UNIT RESOURCES & MODPACK */}
+                  <div className="space-y-12">
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-2 px-1 border-b border-slate-800 pb-4">
+                        <Users className="w-4 h-4 text-cyan-500" />
+                        <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Unit Resources & Modpack</h3>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[ 
+                          { title: "Handbook", desc: "Your unit guide, which can answer most frequent questions" },
+                          { title: "Basic Combat Training Guide", desc: "A refresher on the topics covered during your BCT" },
+                          { title: "Medical Guide", desc: "A comprehensive guide for all things medical" },
+                          { title: "ARMA III 'My Units'", desc: "Displays the unit logo and tag on player titles, uniforms, and vehicles" },
+                          { title: "Approved Clientside Mods", desc: "List of allowed client-side modifications" },
+                          { title: "Modpack V.1.2.4", desc: "Current Unit Modpack, updated Monthly", badges: ["Last Updated 26/JAN/26"] },
+                          { title: "Donations", desc: "Server costs will be approximately $30/mo", badges: ["Provide name in Notes", "Send using Friends & Family"] },
+                          { title: "Unit Patch Order Form", desc: "Hook & Loop Backed 3.5\" Woven Patch", badges: ["REMAINING : 7"] },
+                        ].map((doc, i) => (
+                          <div key={i} className="group bg-slate-900/40 border border-slate-800 p-5 rounded flex flex-col justify-between hover:border-cyan-500/30 transition-all min-h-[160px]">
+                            <div>
+                              <div className="flex justify-between items-start mb-3">
+                                <h4 className="text-xs font-black text-slate-200 group-hover:text-cyan-400 transition-colors uppercase tracking-wider leading-tight">{doc.title}</h4>
+                                {doc.badges && (
+                                  <div className="flex flex-col items-end gap-1 ml-2 shrink-0">
+                                    {doc.badges.map((b, bi) => (
+                                      <span key={bi} className="text-[8px] font-mono bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-1.5 py-0.5 rounded uppercase whitespace-nowrap">
+                                        {b}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <p className="text-[10px] font-mono text-slate-500 leading-relaxed mb-4 uppercase">{doc.desc}</p>
+                            </div>
+                            <a href="#" className="inline-flex items-center gap-1.5 text-[10px] font-black text-cyan-500 uppercase tracking-widest hover:text-cyan-400 transition-colors mt-auto">
+                              Click Here
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                  <div className="space-y-3">
-                    {[ 
-                      { title: "Handbook", desc: "Your unit guide, which can answer most frequent questions" },
-                      { title: "Basic Combat Training Guide", desc: "A refresher on the topics covered during your BCT" },
-                      { title: "Medical Guide", desc: "A comprehensive guide for all things medical" },
-                      { title: "Mission Making Guide", desc: "A comprehensive guide into the world of mission making" },
-                      { title: "ARMA III 'My Units'", desc: "Displays the unit logo and tag on player titles, uniforms, and vehicles" },
-                      { title: "Donations", desc: "Server costs will be approximately $30/mo - Provide name in Notes / Send using Friends & Family" },
-                      { title: "Unit Patch Order Form", desc: "Hook & Loop Backed 3.5\" Woven Patch", badge: "REMAINING : 7" },
-                    ].map((doc, i) => (
-                      <div key={i} className="group bg-slate-900/40 border border-slate-800 p-4 rounded-lg hover:border-cyan-500/30 transition-all">
-                        <div className="flex justify-between items-start mb-2">
-                          <h4 className="text-sm font-bold text-slate-200 group-hover:text-cyan-400 transition-colors uppercase tracking-wider">{doc.title}</h4>
-                          {doc.badge && <span className="text-[10px] font-mono bg-red-500/10 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded">{doc.badge}</span>}
+
+                  {/* RIGHT SIDE: MISSION MAKING RESOURCES */}
+                  <div className="space-y-12">
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-2 px-1 border-b border-slate-800 pb-4">
+                        <Wrench className="w-4 h-4 text-cyan-500" />
+                        <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Mission Making Resources</h3>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[
+                          { title: "Mission Making Guide", desc: "A comprehensive guide into the world of mission making" },
+                          { title: "Mission Making Assets", desc: "Folders with music, sound files, and texture templates for common props" },
+                          { title: "Scripts & Materials", desc: "Essential scripts and visual materials for mission development" },
+                          { title: "UNSC Out of Shadow Composition", desc: "A quick-start resource with all playable slots, mission modules, current arsenal preset, etc" },
+                          { title: "Modpack Planner", desc: "All upcoming modpack changes, including additions and removals" },
+                          { title: "Basic Mission Setup", desc: "Core framework and settings for starting a new mission" },
+                          { title: "Mission Schedule", desc: "Details the author, mission type, and completion status for upcoming projects" },
+                        ].map((doc, i) => (
+                          <div key={i} className="group bg-slate-900/40 border border-slate-800 p-5 rounded flex flex-col justify-between hover:border-cyan-500/30 transition-all min-h-[160px]">
+                            <div>
+                              <h4 className="text-xs font-black text-slate-200 group-hover:text-cyan-400 transition-colors uppercase tracking-wider leading-tight mb-3">{doc.title}</h4>
+                              <p className="text-[10px] font-mono text-slate-500 leading-relaxed mb-4 uppercase">{doc.desc}</p>
+                            </div>
+                            <a href="#" className="inline-flex items-center gap-1.5 text-[10px] font-black text-cyan-500 uppercase tracking-widest hover:text-cyan-400 transition-colors mt-auto">
+                              Click Here
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          </div>
+                        ))}
+                        
+                        {/* Additional Resources List */}
+                        <div className="p-5 bg-slate-900/40 border border-slate-800 rounded flex flex-col justify-between min-h-[160px]">
+                          <div>
+                            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-800 pb-2 mb-3">Additional Resources</div>
+                            <ul className="space-y-2">
+                              <li className="text-[10px] font-mono text-slate-500 flex items-center gap-2 group cursor-pointer hover:text-cyan-400 transition-colors uppercase">
+                                <ChevronRight className="w-3 h-3 text-cyan-500" />
+                                AI Generated Voice Lines
+                              </li>
+                              <li className="text-[10px] font-mono text-slate-500 flex items-center gap-2 group cursor-pointer hover:text-cyan-400 transition-colors uppercase">
+                                <ChevronRight className="w-3 h-3 text-cyan-500" />
+                                Mission Archive
+                              </li>
+                              <li className="text-[10px] font-mono text-slate-500 flex items-center gap-2 group cursor-pointer hover:text-cyan-400 transition-colors uppercase">
+                                <ChevronRight className="w-3 h-3 text-cyan-500" />
+                                Mission Timeline
+                              </li>
+                            </ul>
+                          </div>
                         </div>
-                        <p className="text-xs font-mono text-slate-500 leading-relaxed mb-3">{doc.desc}</p>
-                        <a href="#" className="inline-flex items-center gap-1.5 text-[10px] font-bold text-cyan-500 uppercase tracking-widest hover:text-cyan-400 transition-colors">
-                          Click Here
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* MODPACK */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 px-1">
-                    <Package className="w-4 h-4 text-cyan-500" />
-                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Modpack</h3>
-                  </div>
-                  <div className="space-y-3">
-                    {[
-                      { title: "Approved Clientside Mods", desc: "List of allowed client-side modifications" },
-                      { title: "Modpack V.1.2.4", desc: "Last Updated 26/JAN/26" },
-                    ].map((doc, i) => (
-                      <div key={i} className="group bg-slate-900/40 border border-slate-800 p-4 rounded-lg hover:border-cyan-500/30 transition-all">
-                        <h4 className="text-sm font-bold text-slate-200 group-hover:text-cyan-400 transition-colors uppercase tracking-wider mb-2">{doc.title}</h4>
-                        <p className="text-xs font-mono text-slate-500 leading-relaxed mb-3">{doc.desc}</p>
-                        <a href="#" className="inline-flex items-center gap-1.5 text-[10px] font-bold text-cyan-500 uppercase tracking-widest hover:text-cyan-400 transition-colors">
-                          Click Here
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* MISSION MAKING RESOURCES */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 px-1">
-                    <Wrench className="w-4 h-4 text-cyan-500" />
-                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Mission Making Resources</h3>
-                  </div>
-                  <div className="space-y-3">
-                    {[
-                      { title: "Mission Making Guide", desc: "A comprehensive guide into the world of mission making" },
-                      { title: "Mission Schedule", desc: "Details the author, mission type, and completion status for upcoming projects" },
-                      { title: "Modpack Planner", desc: "All upcoming modpack changes, including additions and removals" },
-                      { title: "Mission Archive", desc: "All available mission files, the date played, modpack version, briefing information, etc" },
-                      { title: "Mission Timeline", desc: "A list of all played missions and how they fit into the overarching timeline" },
-                      { title: "Mission Making Assets", desc: "Folders with music, sound files, and texture templates for common props" },
-                      { title: "UNSC Out of Shadow Composition", desc: "A quick-start resource with all playable slots, mission modules, current arsenal preset, etc" },
-                      { title: "Briefing Template", desc: "Standardised format for the weekly briefings" },
-                      { title: "AI Generated Voice Lines", desc: "A service which can be used to create NPC dialog" },
-                    ].map((doc, i) => (
-                      <div key={i} className="group bg-slate-900/40 border border-slate-800 p-4 rounded-lg hover:border-cyan-500/30 transition-all">
-                        <h4 className="text-sm font-bold text-slate-200 group-hover:text-cyan-400 transition-colors uppercase tracking-wider mb-2">{doc.title}</h4>
-                        <p className="text-xs font-mono text-slate-500 leading-relaxed mb-3">{doc.desc}</p>
-                        <a href="#" className="inline-flex items-center gap-1.5 text-[10px] font-bold text-cyan-500 uppercase tracking-widest hover:text-cyan-400 transition-colors">
-                          Click Here
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
-                      </div>
-                    ))}
-                    <div className="p-4 bg-slate-900/40 border border-slate-800 rounded-lg space-y-3">
-                       <div className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-800 pb-2">Additional Resources</div>
-                       <ul className="space-y-2">
-                         <li className="text-xs font-mono text-slate-500 flex items-center gap-2 group cursor-pointer hover:text-cyan-400 transition-colors">
-                           <ChevronRight className="w-3 h-3 text-cyan-500" />
-                           Scripts & Materials
-                         </li>
-                         <li className="text-xs font-mono text-slate-500 flex items-center gap-2 group cursor-pointer hover:text-cyan-400 transition-colors">
-                           <ChevronRight className="w-3 h-3 text-cyan-500" />
-                           Basic Mission Setup
-                         </li>
-                       </ul>
                     </div>
                   </div>
                 </div>
@@ -2382,8 +2444,7 @@ export default function App() {
                               : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
                           }`}
                         >
-                          <div className="text-xs font-black text-cyan-500 mb-1">MISSION {mission.id}</div>
-                          <div className="text-xs font-bold text-white truncate">{mission.title.split(': ')[1] || mission.title}</div>
+                          <div className="text-xs font-bold text-white truncate uppercase tracking-widest">{mission.title}</div>
                           <div className="text-xs font-mono text-slate-500 mt-2">{new Date(mission.date).toLocaleDateString()}</div>
                           
                           {isAdmin && (
@@ -2543,61 +2604,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Deployment Manifest Section - Moved here */}
-                    <div className="space-y-4">
-                      <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <ListChecks className="w-3.5 h-3.5 text-cyan-500" />
-                          Deployment Manifest
-                        </div>
-                        <div className="flex items-center gap-3 text-[10px] font-mono">
-                          <span className="text-green-500">ACTIVE: {attendance.filter(a => a.status === 'Attended').length}</span>
-                          <span className="text-cyan-500">SIGNED: {attendance.length}</span>
-                        </div>
-                      </h3>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {attendance.map(entry => {
-                          const stats = getMemberStats(entry.name);
-                          return (
-                            <div key={entry.id} className="flex items-center gap-2.5 bg-slate-900/40 border border-slate-800 p-2 rounded group hover:border-cyan-500/30 transition-colors">
-                              <div 
-                                className="w-1 h-7 rounded-full shrink-0" 
-                                style={{ backgroundColor: STATUS_COLORS[entry.status] || '#3b82f6' }} 
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="flex items-center gap-1.5 min-w-0">
-                                    <div className="text-[10px] font-bold text-slate-200 truncate">{entry.name}</div>
-                                    {stats.isSignedUp && (
-                                      <CheckCircle2 className="w-2.5 h-2.5 text-cyan-400 shrink-0" />
-                                    )}
-                                  </div>
-                                  <div className="text-[10px] font-mono text-slate-600 shrink-0">{stats.completed} OPS</div>
-                                </div>
-                                <div className="text-[10px] font-mono text-slate-500 uppercase truncate">{entry.role} // {entry.squad}</div>
-                              </div>
-                              <div className="text-[10px] font-mono text-slate-600 uppercase shrink-0">
-                                {isAdmin ? (
-                                  <select
-                                    value={entry.status}
-                                    onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
-                                    className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-[9px] font-mono focus:border-cyan-500/50 outline-none transition-all cursor-pointer"
-                                  >
-                                    {Object.keys(STATUS_COLORS).map(status => (
-                                      <option key={status} value={status}>{status}</option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  entry.status
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
                     {/* Attachments Section */}
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
@@ -2653,6 +2659,61 @@ export default function App() {
                             <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">No attachments available for this mission</p>
                           </div>
                         )}
+                      </div>
+                    </div>
+
+                    {/* Deployment Manifest Section */}
+                    <div className="space-y-4">
+                      <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <ListChecks className="w-3.5 h-3.5 text-cyan-500" />
+                          Deployment Manifest
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] font-mono">
+                          <span className="text-green-500">ACTIVE: {attendance.filter(a => a.status === 'Attended').length}</span>
+                          <span className="text-cyan-500">SIGNED: {attendance.length}</span>
+                        </div>
+                      </h3>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {attendance.map(entry => {
+                          const stats = getMemberStats(entry.name);
+                          return (
+                            <div key={entry.id} className="flex items-center gap-2.5 bg-slate-900/40 border border-slate-800 p-2 rounded group hover:border-cyan-500/30 transition-colors">
+                              <div 
+                                className="w-1 h-7 rounded-full shrink-0" 
+                                style={{ backgroundColor: STATUS_COLORS[entry.status] || '#3b82f6' }} 
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <div className="text-[10px] font-bold text-slate-200 truncate">{entry.name}</div>
+                                    {stats.isSignedUp && (
+                                      <CheckCircle2 className="w-2.5 h-2.5 text-cyan-400 shrink-0" />
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] font-mono text-slate-600 shrink-0">{stats.completed} OPS</div>
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-500 uppercase truncate">{entry.role} // {entry.squad}</div>
+                              </div>
+                              <div className="text-[10px] font-mono text-slate-600 uppercase shrink-0">
+                                {isAdmin ? (
+                                  <select
+                                    value={entry.status}
+                                    onChange={(e) => handleUpdateAttendance(entry.id, e.target.value)}
+                                    className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-[9px] font-mono focus:border-cyan-500/50 outline-none transition-all cursor-pointer"
+                                  >
+                                    {Object.keys(STATUS_COLORS).map(status => (
+                                      <option key={status} value={status}>{status}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  entry.status
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>

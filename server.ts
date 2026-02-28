@@ -229,11 +229,11 @@ Havok, with the assistance of the 16th SOAR, will conduct a raid on Lento Airbas
   
   roster.forEach((member, idx) => {
     // Mission 1 (2 weeks ago)
-    if (idx % 2 === 0) {
+    if (idx % 2 === 0 && missionIds[0]) {
       insertAttendance.run(missionIds[0].id, member.name, "Rifleman", "1-1", "Attended", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString());
     }
     // Mission 2 (1 week ago)
-    if (idx % 3 !== 0) {
+    if (idx % 3 !== 0 && missionIds[1]) {
       insertAttendance.run(missionIds[1].id, member.name, "Rifleman", "1-1", "Attended", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
     }
   });

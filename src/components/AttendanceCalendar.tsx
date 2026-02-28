@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Filter } from 'lucide-react';
 
 interface RosterMember {
   id: number;
@@ -81,6 +81,17 @@ const getTeamLabel = (squad: string, team: string) => {
 
 export default function AttendanceCalendar({ roster, missions, allAttendance, showDischargedOnly }: Props) {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [collapsedMonths, setCollapsedMonths] = useState<Set<number>>(new Set());
+  const [timeFilter, setTimeFilter] = useState<'all' | 'current' | '1m' | '3months' | '6months'>('all');
+
+  const toggleMonth = (month: number) => {
+    setCollapsedMonths(prev => {
+      const next = new Set(prev);
+      if (next.has(month)) next.delete(month);
+      else next.add(month);
+      return next;
+    });
+  };
 
   const currentSundayStr = useMemo(() => {
     const now = new Date();
@@ -113,6 +124,63 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
     });
     return grouped;
   }, [selectedYear]);
+
+  const filteredSundaysByMonth = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    if (selectedYear !== currentYear && timeFilter !== 'all') {
+      return sundaysByMonth;
+    }
+
+    if (timeFilter === 'current') {
+      const monthSundays = sundaysByMonth[currentMonth] || [];
+      const currentWeekSunday = monthSundays.find(s => {
+        const y = s.getFullYear();
+        const m = String(s.getMonth() + 1).padStart(2, '0');
+        const d2 = String(s.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d2}` === currentSundayStr;
+      });
+      return currentWeekSunday ? { [currentMonth]: [currentWeekSunday] } : {};
+    }
+
+    if (timeFilter === '1m') {
+      return { [currentMonth]: sundaysByMonth[currentMonth] || [] };
+    }
+    
+    if (timeFilter === '3months') {
+      const filtered: Record<number, Date[]> = {};
+      // Last 3 months including current
+      for (let i = 0; i < 3; i++) {
+        const m = (currentMonth - i + 12) % 12;
+        if (sundaysByMonth[m]) filtered[m] = sundaysByMonth[m];
+      }
+      return filtered;
+    }
+
+    if (timeFilter === '6months') {
+      const filtered: Record<number, Date[]> = {};
+      for (let i = 0; i < 6; i++) {
+        const m = (currentMonth - i + 12) % 12;
+        if (sundaysByMonth[m]) filtered[m] = sundaysByMonth[m];
+      }
+      return filtered;
+    }
+
+    return sundaysByMonth;
+  }, [sundaysByMonth, timeFilter, selectedYear]);
+
+  const visibleSundaysByMonth = useMemo(() => {
+    const result: Record<number, Date[]> = {};
+    Object.entries(filteredSundaysByMonth).forEach(([month, sundays]) => {
+      const m = parseInt(month);
+      if (!collapsedMonths.has(m)) {
+        result[m] = sundays;
+      }
+    });
+    return result;
+  }, [filteredSundaysByMonth, collapsedMonths]);
 
   const missionsBySunday = useMemo(() => {
     const grouped: Record<string, Mission[]> = {};
@@ -231,9 +299,35 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
   return (
     <div className="space-y-4 bg-slate-900/40 border border-slate-800 rounded-lg p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-black tracking-tighter text-white uppercase italic">
-          {showDischargedOnly ? 'Attendance History (Discharged)' : 'Attendance Calendar'}
-        </h2>
+        <div className="flex items-center gap-4">
+          <h2 className="text-xl font-black tracking-tighter text-white uppercase italic">
+            {showDischargedOnly ? 'Attendance History (Discharged)' : 'Attendance Calendar'}
+          </h2>
+          
+          <div className="flex items-center gap-1 bg-slate-800/50 p-1 rounded border border-slate-800/50">
+            <Filter className="w-3 h-3 text-slate-500 ml-1 mr-1" />
+            {(['all', 'current', '1m', '3months', '6months'] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setTimeFilter(f)}
+                className={`px-2 py-1 text-[9px] font-black uppercase tracking-widest rounded transition-all ${
+                  timeFilter === f ? 'bg-cyan-600 text-white' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                {f === 'all' ? 'All' : f === 'current' ? 'Current' : f === '1m' ? '1M' : f === '3months' ? '3M' : '6M'}
+              </button>
+            ))}
+          </div>
+
+          {collapsedMonths.size > 0 && (
+            <button 
+              onClick={() => setCollapsedMonths(new Set())}
+              className="text-[9px] font-black uppercase tracking-widest text-cyan-500 hover:text-cyan-400 transition-colors flex items-center gap-1"
+            >
+              <Eye className="w-3 h-3" /> Expand All
+            </button>
+          )}
+        </div>
         <div className="flex items-center gap-4">
           <button onClick={() => setSelectedYear(y => y - 1)} className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors">
             <ChevronLeft className="w-5 h-5" />
@@ -251,27 +345,55 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
             <tr>
               <th className="w-12 border-b border-slate-800/50 p-2" rowSpan={2}></th>
               <th className="w-40 border-b border-slate-800/50 p-2 text-left text-slate-500 uppercase tracking-widest align-bottom" rowSpan={2}>Personnel</th>
-              {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
-                const monthName = new Date(selectedYear, parseInt(month), 1).toLocaleString('en-US', { month: 'long' });
+              {Object.entries(visibleSundaysByMonth).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month, sundays], monthIdx) => {
+                const mInt = parseInt(month);
+                const monthName = new Date(selectedYear, mInt, 1).toLocaleString('en-US', { month: 'long' });
                 return (
                   <React.Fragment key={month}>
                     <th 
                       colSpan={sundays.length} 
                       className="border-b border-slate-800/50 px-2 py-1.5 font-black text-center text-slate-300 uppercase tracking-widest text-[10px]"
                     >
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex items-center justify-center gap-2">
                         {monthName}
+                        <button 
+                          onClick={() => toggleMonth(mInt)}
+                          className="text-slate-600 hover:text-cyan-500 transition-colors p-0.5"
+                          title="Collapse Month"
+                        >
+                          <EyeOff className="w-3 h-3" />
+                        </button>
                       </div>
                     </th>
-                    {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                    {monthIdx < Object.keys(visibleSundaysByMonth).length - 1 && (
                       <th className="w-2 border-b border-slate-800/50" rowSpan={2}></th>
                     )}
                   </React.Fragment>
                 );
               })}
+              {/* Collapsed Months Indicators */}
+              {Object.entries(filteredSundaysByMonth).filter(([m]) => collapsedMonths.has(parseInt(m))).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month]) => {
+                const mInt = parseInt(month);
+                const monthShort = new Date(selectedYear, mInt, 1).toLocaleString('en-US', { month: 'short' });
+                return (
+                  <React.Fragment key={month + '-collapsed'}>
+                    <th className="w-6 border-b border-slate-800/50 p-0" rowSpan={2}>
+                      <button 
+                        onClick={() => toggleMonth(mInt)}
+                        className="w-full h-full flex flex-col items-center justify-center gap-1 hover:bg-slate-800 transition-colors py-2"
+                        title={`Expand ${monthShort}`}
+                      >
+                        <span className="[writing-mode:vertical-lr] text-[8px] font-black text-slate-600 uppercase tracking-tighter">{monthShort}</span>
+                        <Eye className="w-2.5 h-2.5 text-cyan-500/50" />
+                      </button>
+                    </th>
+                    <th className="w-1 border-b border-slate-800/50" rowSpan={2}></th>
+                  </React.Fragment>
+                );
+              })}
             </tr>
             <tr>
-              {Object.entries(sundaysByMonth).map(([month, sundays]) => {
+              {Object.entries(visibleSundaysByMonth).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month, sundays]) => {
                 return (
                   <React.Fragment key={month + '-dates'}>
                     {sundays.map((sunday) => {
@@ -298,13 +420,13 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
               <React.Fragment key={`${group.squad}-${group.team}-${groupIdx}`}>
                 {groupIdx > 0 && group.squad !== groupedRoster[groupIdx - 1].squad && group.squad !== 'Attendance History (Discharged)' && (
                   <tr className="h-6 !border-transparent bg-transparent">
-                    <td colSpan={2 + Object.values(sundaysByMonth).flat().length + Object.keys(sundaysByMonth).length - 1}></td>
+                    <td colSpan={2 + Object.values(visibleSundaysByMonth).flat().length + Object.keys(visibleSundaysByMonth).length - 1 + (collapsedMonths.size * 2)}></td>
                   </tr>
                 )}
                 {group.squad === 'Attendance History (Discharged)' && (
                   <tr>
                     <td 
-                      colSpan={2 + Object.values(sundaysByMonth).flat().length + Object.keys(sundaysByMonth).length - 1} 
+                      colSpan={2 + Object.values(visibleSundaysByMonth).flat().length + Object.keys(visibleSundaysByMonth).length - 1 + (collapsedMonths.size * 2)} 
                       className="bg-slate-900/80 text-slate-500 font-black text-left pl-4 py-3 uppercase tracking-[0.3em] border-y border-slate-800 mt-4"
                     >
                       Attendance History (Discharged)
@@ -319,7 +441,7 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
                     <td className="font-bold px-3 py-1.5 whitespace-nowrap text-slate-200 border-r border-slate-800/50">
                       {member.name}
                     </td>
-                    {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                    {Object.entries(visibleSundaysByMonth).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month, sundays], monthIdx) => {
                       return (
                         <React.Fragment key={month}>
                           {sundays.map((sunday) => {
@@ -360,12 +482,19 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
                               </td>
                             );
                           })}
-                          {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                          {monthIdx < Object.keys(visibleSundaysByMonth).length - 1 && (
                             <td className="w-2"></td>
                           )}
                         </React.Fragment>
                       );
                     })}
+                    {/* Collapsed Months Cells */}
+                    {Object.entries(filteredSundaysByMonth).filter(([m]) => collapsedMonths.has(parseInt(m))).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month]) => (
+                      <React.Fragment key={month + '-collapsed-cell'}>
+                        <td className="bg-slate-950/30 border-r border-slate-800/50"></td>
+                        <td className="w-2"></td>
+                      </React.Fragment>
+                    ))}
                   </tr>
                 ))}
               </React.Fragment>
@@ -374,7 +503,7 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
             {!showDischargedOnly && (
               <>
                 <tr className="h-6 !border-transparent bg-transparent">
-                  <td colSpan={2 + Object.values(sundaysByMonth).flat().length + Object.keys(sundaysByMonth).length - 1}></td>
+                  <td colSpan={2 + Object.values(visibleSundaysByMonth).flat().length + Object.keys(visibleSundaysByMonth).length - 1 + (collapsedMonths.size * 2)}></td>
                 </tr>
                 <tr>
                   <td 
@@ -383,23 +512,30 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
                   >
                     Guests
                   </td>
-                  {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                  {Object.entries(visibleSundaysByMonth).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month, sundays], monthIdx) => {
                     return (
                       <React.Fragment key={`guest-header-${month}`}>
                         <td colSpan={sundays.length} className="border-y border-slate-800"></td>
-                        {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                        {monthIdx < Object.keys(visibleSundaysByMonth).length - 1 && (
                           <td className="w-2"></td>
                         )}
                       </React.Fragment>
                     );
                   })}
+                  {/* Collapsed Months Guest Header Cells */}
+                  {Object.entries(filteredSundaysByMonth).filter(([m]) => collapsedMonths.has(parseInt(m))).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month]) => (
+                    <React.Fragment key={`guest-header-collapsed-${month}`}>
+                      <td className="border-y border-slate-800"></td>
+                      <td className="w-2"></td>
+                    </React.Fragment>
+                  ))}
                 </tr>
                 {[0, 1, 2, 3].map(rowIdx => (
                   <tr key={`guest-row-${rowIdx}`} className="hover:bg-slate-800/30 transition-colors">
                     <td className="border-r border-slate-800/50"></td>
                     <td className="font-bold px-3 py-1.5 whitespace-nowrap text-slate-200 border-r border-slate-800/50">
                     </td>
-                    {Object.entries(sundaysByMonth).map(([month, sundays], monthIdx) => {
+                    {Object.entries(visibleSundaysByMonth).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month, sundays], monthIdx) => {
                       return (
                         <React.Fragment key={`guest-cells-${month}`}>
                           {sundays.map((sunday) => {
@@ -419,12 +555,19 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
                               </td>
                             );
                           })}
-                          {monthIdx < Object.keys(sundaysByMonth).length - 1 && (
+                          {monthIdx < Object.keys(visibleSundaysByMonth).length - 1 && (
                             <td className="w-2"></td>
                           )}
                         </React.Fragment>
                       );
                     })}
+                    {/* Collapsed Months Guest Cells */}
+                    {Object.entries(filteredSundaysByMonth).filter(([m]) => collapsedMonths.has(parseInt(m))).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([month]) => (
+                      <React.Fragment key={`guest-collapsed-cell-${month}-${rowIdx}`}>
+                        <td className="bg-slate-950/30 border-b border-slate-800/50"></td>
+                        <td className="w-2"></td>
+                      </React.Fragment>
+                    ))}
                   </tr>
                 ))}
               </>
