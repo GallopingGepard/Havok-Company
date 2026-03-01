@@ -15,6 +15,31 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
+import { auth, db, storage } from './firebase';
+import { 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  updatePassword,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { 
+  collection, 
+  query, 
+  onSnapshot, 
+  doc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  getDocs, 
+  orderBy, 
+  where,
+  setDoc,
+  writeBatch,
+  Timestamp,
+  serverTimestamp
+} from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import {
   DndContext,
   closestCenter,
@@ -39,7 +64,7 @@ import { CSS } from '@dnd-kit/utilities';
 import AttendanceCalendar from './components/AttendanceCalendar';
 
 interface Mission {
-  id: number;
+  id: string;
   title: string;
   description: string;
   location?: string;
@@ -55,16 +80,17 @@ interface Mission {
 }
 
 interface Attachment {
-  id: number;
-  mission_id: number;
+  id: string;
+  mission_id: string;
   filename: string;
   original_name: string;
   mime_type: string;
   size: number;
+  url?: string;
 }
 
 interface RosterMember {
-  id: number;
+  id: string;
   name: string;
   rank: string;
   squad: string;
@@ -76,16 +102,17 @@ interface RosterMember {
 }
 
 interface UserAccount {
-  id: number;
+  id: string;
   username: string;
   role: string;
-  roster_id?: number;
+  roster_id?: string;
   password?: string;
+  email?: string;
 }
 
 interface Attendance {
-  id: number;
-  mission_id: number;
+  id: string;
+  mission_id: string;
   name: string;
   role: string;
   squad: string;
@@ -94,9 +121,10 @@ interface Attendance {
 }
 
 interface User {
-  id: number;
+  id: string;
   username: string;
   role: string;
+  email?: string;
 }
 
 const ROLES = [
@@ -612,7 +640,7 @@ function AccountModal({ account, roster, onClose, onSave, onDelete }: {
               <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Link to Roster</label>
               <select 
                 value={formData.roster_id || ''} 
-                onChange={e => setFormData({ ...formData, roster_id: e.target.value ? Number(e.target.value) : undefined })}
+                onChange={e => setFormData({ ...formData, roster_id: e.target.value || undefined })}
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono focus:border-cyan-500/50 outline-none transition-all"
               >
                 <option value="">No Link</option>
@@ -752,11 +780,6 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [attendanceView, setAttendanceView] = useState<'calendar' | 'discharged'>('calendar');
   const [user, setUser] = useState<User | null>(null);
-  const userRef = useRef<User | null>(null);
-
-  useEffect(() => {
-    userRef.current = user;
-  }, [user]);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [adminUsername, setAdminUsername] = useState('');
@@ -770,7 +793,6 @@ export default function App() {
   const [adminAuthError, setAdminAuthError] = useState('');
   const [selectedHistoryMission, setSelectedHistoryMission] = useState<Mission | null>(null);
   const [historyAttendance, setHistoryAttendance] = useState<Attendance[]>([]);
-  const socketRef = useRef<WebSocket | null>(null);
 
   // Admin States
   const [editingMember, setEditingMember] = useState<RosterMember | null>(null);
@@ -796,68 +818,77 @@ export default function App() {
   );
 
   useEffect(() => {
-    checkAuth().finally(() => setLoading(false));
-    setupWebSocket();
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // Fetch user role from Firestore
+        const userQuery = query(collection(db, 'users'), where('email', '==', firebaseUser.email));
+        const userSnapshot = await getDocs(userQuery);
+        
+        if (!userSnapshot.empty) {
+          const userData = userSnapshot.docs[0].data();
+          setUser({
+            id: firebaseUser.uid,
+            username: userData.username,
+            role: userData.role,
+            email: firebaseUser.email || ''
+          });
+        } else {
+          // Fallback if user doc not found (e.g. first admin)
+          setUser({
+            id: firebaseUser.uid,
+            username: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+            role: firebaseUser.email === 'admin@havok.com' ? 'admin' : 'member',
+            email: firebaseUser.email || ''
+          });
+        }
+        if (view === 'login') setView('roster');
+      } else {
+        setUser(null);
+        if (view !== 'login') setView('login');
+      }
+      setLoading(false);
+    });
+
+    // Real-time listeners
+    const unsubRoster = onSnapshot(query(collection(db, 'roster'), orderBy('display_order', 'asc')), (snapshot) => {
+      setRoster(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RosterMember)));
+    });
+
+    const unsubMissions = onSnapshot(query(collection(db, 'missions'), orderBy('date', 'asc')), (snapshot) => {
+      setMissions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Mission)));
+    });
+
+    const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snapshot) => {
+      setAllAttendance(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attendance)));
+    });
+
     return () => {
-      if (socketRef.current) socketRef.current.close();
+      unsubscribe();
+      unsubRoster();
+      unsubMissions();
+      unsubAttendance();
     };
   }, []);
 
   useEffect(() => {
-    if (user) {
-      Promise.all([fetchMissions(), fetchRoster(), fetchAllAttendance()]);
-      if (isAdmin) fetchUsers();
+    if (user && isAdmin) {
+      const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserAccount)));
+      });
+      return () => unsubUsers();
     }
-  }, [user]);
-
-  useEffect(() => {
-    if (view === 'accounts' && isAdmin) {
-      fetchUsers();
-    }
-  }, [view, isAdmin]);
-
-  const checkAuth = async () => {
-    try {
-      const res = await fetch('/api/auth/me');
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data);
-        if (view === 'login') {
-          setView('roster');
-        }
-      } else {
-        setUser(null);
-        if (view !== 'login') {
-          setView('login');
-        }
-      }
-    } catch (err) {
-      console.error('Auth check failed', err);
-      setUser(null);
-      setView('login');
-    }
-  };
+  }, [user, isAdmin]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: loginUsername, password: loginPassword }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data);
-        setView('roster');
-        setLoginUsername('');
-        setLoginPassword('');
-      } else {
-        setAuthError('Invalid credentials');
-      }
-    } catch (err) {
-      setAuthError('Login failed');
+      const email = loginUsername.includes('@') ? loginUsername : `${loginUsername.toLowerCase()}@havok.com`;
+      await signInWithEmailAndPassword(auth, email, loginPassword);
+      setLoginUsername('');
+      setLoginPassword('');
+    } catch (err: any) {
+      setAuthError(err.message || 'Login failed');
     }
   };
 
@@ -865,22 +896,12 @@ export default function App() {
     e.preventDefault();
     setAdminAuthError('');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: adminUsername, password: adminPassword }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data);
-        setView('roster');
-        setAdminUsername('');
-        setAdminPassword('');
-      } else {
-        setAdminAuthError('Invalid credentials');
-      }
-    } catch (err) {
-      setAdminAuthError('Login failed');
+      const email = adminUsername.includes('@') ? adminUsername : `${adminUsername.toLowerCase()}@havok.com`;
+      await signInWithEmailAndPassword(auth, email, adminPassword);
+      setAdminUsername('');
+      setAdminPassword('');
+    } catch (err: any) {
+      setAdminAuthError(err.message || 'Login failed');
     }
   };
 
@@ -889,143 +910,73 @@ export default function App() {
     setAuthError('');
     if (!guestUsername.trim() || !guestPassword.trim()) return setAuthError('Please enter credentials');
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: guestUsername, password: guestPassword }),
-      });
-      const data = await response.json();
-      if (response.ok) {
-        setUser(data);
-        setView('roster');
-        setGuestUsername('');
-        setGuestPassword('');
-      } else {
-        setAuthError(data.error);
-      }
-    } catch (err) {
-      setAuthError('Connection failed');
+      const email = guestUsername.includes('@') ? guestUsername : `${guestUsername.toLowerCase()}@havok.com`;
+      await signInWithEmailAndPassword(auth, email, guestPassword);
+      setGuestUsername('');
+      setGuestPassword('');
+    } catch (err: any) {
+      setAuthError(err.message || 'Login failed');
     }
   };
 
   const handleChangePassword = async (pwd: string) => {
+    if (!auth.currentUser) return;
     setAuthError('');
     try {
-      const response = await fetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newPassword: pwd }),
-      });
-      if (response.ok) {
-        setPasswordChangeSuccess(true);
-        setTimeout(() => {
-          setIsChangingPassword(false);
-          setPasswordChangeSuccess(false);
-          setNewPassword('');
-        }, 2000);
-      } else {
-        const data = await response.json();
-        setAuthError(data.error);
-      }
-    } catch (err) {
-      setAuthError('Connection failed');
+      await updatePassword(auth.currentUser, pwd);
+      setPasswordChangeSuccess(true);
+      setTimeout(() => {
+        setIsChangingPassword(false);
+        setPasswordChangeSuccess(false);
+        setNewPassword('');
+      }, 2000);
+    } catch (err: any) {
+      setAuthError(err.message || 'Update failed');
     }
   };
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      setUser(null);
-      setView('login');
+      await signOut(auth);
     } catch (err) {
       console.error('Logout failed', err);
     }
   };
 
-  const fetchAllAttendance = async () => {
-    try {
-      const res = await fetch('/api/attendance');
-      const data = await res.json();
-      setAllAttendance(data);
-    } catch (err) {
-      console.error('Failed to fetch all attendance', err);
-    }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      const res = await fetch('/api/users');
-      if (res.ok) {
-        const data = await res.json();
-        setUsers(data);
-      } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          console.error('Failed to fetch users:', data.error);
-        } else {
-          const text = await res.text();
-          console.error('Failed to fetch users (HTML):', text);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch users', err);
-    }
-  };
-
   const handleSaveUser = async (account: Partial<UserAccount>) => {
-    const isNew = !account.id;
-    const url = isNew ? '/api/users' : `/api/users/${account.id}`;
-    const method = isNew ? 'POST' : 'PUT';
-
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(account),
-      });
-      if (res.ok) {
-        fetchUsers();
-        setEditingUser(null);
-        setIsCreatingUser(false);
+      const isNew = !account.id;
+      const { password, ...data } = account;
+      
+      // Note: In a real app, you'd use Firebase Admin SDK to create users with specific passwords.
+      // For a static site, we'll just store the metadata in Firestore.
+      // The user would need to sign up or be created via Admin SDK.
+      
+      if (isNew) {
+        await addDoc(collection(db, 'users'), {
+          ...data,
+          email: account.email || `${account.username?.toLowerCase()}@havok.com`
+        });
       } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to save user: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to save user: Server error (${res.status}). Check console for details.`);
-        }
+        await updateDoc(doc(db, 'users', account.id!), data);
       }
+      
+      setEditingUser(null);
+      setIsCreatingUser(false);
     } catch (err) {
       console.error('Failed to save user', err);
-      alert('Failed to save user. Network error or server is down.');
+      alert('Failed to save user.');
     }
   };
 
-  const handleDeleteUser = async (id: number) => {
+  const handleDeleteUser = async (id: string) => {
     if (!confirm('Are you sure you want to delete this account?')) return;
     try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchUsers();
-        setEditingUser(null);
-      } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to delete user: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to delete user: Server error (${res.status}). Check console for details.`);
-        }
-      }
+      await deleteDoc(doc(db, 'users', id));
+      setEditingUser(null);
     } catch (err) {
       console.error('Failed to delete user', err);
-      alert('Failed to delete user. Network error or server is down.');
+      alert('Failed to delete user.');
     }
   };
 
@@ -1044,7 +995,6 @@ export default function App() {
     const overId = String(over.id);
 
     if (overId.startsWith('squad:')) {
-      // Dropped on an empty droppable area
       const parts = overId.split(':');
       newSquad = parts[1];
       newTeam = parts[3];
@@ -1061,7 +1011,6 @@ export default function App() {
       }
       newRoster.splice(insertIndex, 0, { ...activeMember, squad: newSquad, team: newTeam });
     } else {
-      // Dropped on another member
       const overMember = roster.find(m => m.id === over.id);
       if (!overMember) return;
 
@@ -1077,20 +1026,19 @@ export default function App() {
 
     setRoster(newRoster);
 
-    // Persist to server
-    const membersToUpdate = newRoster.map((m, index) => ({
-      id: m.id,
-      display_order: index,
-      squad: m.squad,
-      team: m.team
-    }));
-
-    try {
-      await fetch('/api/roster/reorder', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ members: membersToUpdate }),
+    // Persist to Firestore
+    const batch = writeBatch(db);
+    newRoster.forEach((m, index) => {
+      const memberRef = doc(db, 'roster', m.id);
+      batch.update(memberRef, {
+        display_order: index,
+        squad: m.squad,
+        team: m.team
       });
+    });
+    
+    try {
+      await batch.commit();
     } catch (err) {
       console.error('Failed to persist reorder', err);
     }
@@ -1098,190 +1046,111 @@ export default function App() {
 
   useEffect(() => {
     if (selectedMission) {
-      fetchAttendance(selectedMission.id);
-      fetchAttachments(selectedMission.id);
+      const unsubAttendance = onSnapshot(query(collection(db, 'attendance'), where('mission_id', '==', selectedMission.id)), (snapshot) => {
+        setAttendance(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attendance)));
+      });
+      const unsubAttachments = onSnapshot(query(collection(db, 'attachments'), where('mission_id', '==', selectedMission.id)), (snapshot) => {
+        setMissionAttachments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attachment)));
+      });
+      return () => {
+        unsubAttendance();
+        unsubAttachments();
+      };
     }
   }, [selectedMission]);
 
-  const handleCompleteMission = async (missionId: number) => {
+  const handleCompleteMission = async (missionId: string) => {
     if (!window.confirm('Are you sure you want to mark this mission as complete? It will be moved to the archive.')) return;
     try {
-      const res = await fetch(`/api/missions/${missionId}/complete`, { method: 'PUT' });
-      if (res.ok) {
-        fetchMissions();
-        setSelectedMission(null);
-      }
+      const missionRef = doc(db, 'missions', missionId);
+      await updateDoc(missionRef, { status: 'completed' });
+      
+      // Automatic attendance logic
+      const rosterSnapshot = await getDocs(collection(db, 'roster'));
+      const attendanceSnapshot = await getDocs(query(collection(db, 'attendance'), where('mission_id', '==', missionId)));
+      
+      const attendedNames = new Set(attendanceSnapshot.docs.map(d => d.data().name));
+      const mission = missions.find(m => m.id === missionId);
+      const missionDate = mission ? new Date(mission.date) : new Date();
+
+      const batch = writeBatch(db);
+      rosterSnapshot.docs.forEach(memberDoc => {
+        const member = memberDoc.data();
+        if (!attendedNames.has(member.name)) {
+          let status = "Absent (No Notice)";
+          if (member.loa_until) {
+            const loaUntil = new Date(member.loa_until);
+            if (loaUntil >= missionDate) status = "Absent (LOA)";
+          }
+          if (status === "Absent (No Notice)") {
+            if (member.squad === '1-3' || member.team === 'Reserves') {
+              status = "Absent (Reserves)";
+            }
+          }
+          const attRef = doc(collection(db, 'attendance'));
+          batch.set(attRef, {
+            mission_id: missionId,
+            name: member.name,
+            role: member.role,
+            squad: member.squad,
+            status,
+            signed_at: new Date().toISOString()
+          });
+        }
+      });
+      await batch.commit();
+      setSelectedMission(null);
     } catch (err) {
       console.error('Failed to complete mission', err);
     }
   };
 
-  const handleUpdateAttendance = async (attendanceId: number, newStatus: string) => {
+  const handleUpdateAttendance = async (attendanceId: string, newStatus: string) => {
     try {
-      const res = await fetch(`/api/attendance/${attendanceId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (res.ok) {
-        // State will be updated via WebSocket broadcast
-      }
+      await updateDoc(doc(db, 'attendance', attendanceId), { status: newStatus });
     } catch (err) {
       console.error('Failed to update attendance', err);
     }
   };
 
-  const handleRemoveAttendance = async (attendanceId: number) => {
+  const handleRemoveAttendance = async (attendanceId: string) => {
     if (!confirm('Are you sure you want to remove this entry from the manifest?')) return;
     try {
-      const res = await fetch(`/api/attendance/${attendanceId}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        // State will be updated via WebSocket broadcast
-      }
+      await deleteDoc(doc(db, 'attendance', attendanceId));
     } catch (err) {
       console.error('Failed to remove attendance', err);
-    }
-  };
-
-  const setupWebSocket = () => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${window.location.host}`);
-    
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'UPDATE_ROSTER') fetchRoster();
-      if (data.type === 'UPDATE_MISSIONS') fetchMissions();
-      if (data.type === 'UPDATE_USERS' && userRef.current?.role === 'admin') fetchUsers();
-      
-      if (data.type === 'SIGNUP_UPDATE') {
-        setAllAttendance(prev => {
-          const index = prev.findIndex(a => a.id === data.entry.id);
-          if (index !== -1) {
-            const next = [...prev];
-            next[index] = data.entry;
-            return next;
-          }
-          return [data.entry, ...prev];
-        });
-        if (selectedMission && Number(data.missionId) === selectedMission.id) {
-          setAttendance(prev => {
-            const index = prev.findIndex(a => a.name === data.entry.name);
-            if (index !== -1) {
-              const next = [...prev];
-              next[index] = data.entry;
-              return next;
-            }
-            return [data.entry, ...prev];
-          });
-        }
-        if (selectedHistoryMission && Number(data.missionId) === selectedHistoryMission.id) {
-          setHistoryAttendance(prev => {
-            const index = prev.findIndex(a => a.id === data.entry.id);
-            if (index !== -1) {
-              const next = [...prev];
-              next[index] = data.entry;
-              return next;
-            }
-            return [data.entry, ...prev];
-          });
-        }
-      }
-
-      if (data.type === 'SIGNUP_DELETE') {
-        setAllAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
-        if (selectedMission && Number(data.missionId) === selectedMission.id) {
-          setAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
-        }
-        if (selectedHistoryMission && Number(data.missionId) === selectedHistoryMission.id) {
-          setHistoryAttendance(prev => prev.filter(a => a.id !== Number(data.id)));
-        }
-      }
-    };
-
-    socket.onclose = () => {
-      setTimeout(setupWebSocket, 3000);
-    };
-
-    socketRef.current = socket;
-  };
-
-  const fetchMissions = async () => {
-    try {
-      const res = await fetch('/api/missions');
-      if (res.ok) {
-        const data = await res.json();
-        setMissions(data);
-        if (data.length > 0 && !selectedMission) setSelectedMission(data[0]);
-      } else {
-        console.error('Failed to fetch missions:', res.statusText);
-      }
-    } catch (err) {
-      console.error('Failed to fetch missions', err);
-    }
-  };
-
-  const fetchRoster = async () => {
-    try {
-      const res = await fetch('/api/roster');
-      if (res.ok) {
-        const data = await res.json();
-        setRoster(data);
-      } else {
-        console.error('Failed to fetch roster:', res.statusText);
-      }
-    } catch (err) {
-      console.error('Failed to fetch roster', err);
-    }
-  };
-
-  const fetchAttendance = async (missionId: number) => {
-    try {
-      const res = await fetch(`/api/missions/${missionId}/attendance`);
-      const data = await res.json();
-      setAttendance(data);
-    } catch (err) {
-      console.error('Failed to fetch attendance', err);
-    }
-  };
-
-  const fetchAttachments = async (missionId: number) => {
-    try {
-      const res = await fetch(`/api/missions/${missionId}/attachments`);
-      const data = await res.json();
-      setMissionAttachments(data);
-    } catch (err) {
-      console.error('Failed to fetch attachments', err);
     }
   };
 
   const handleUploadAttachment = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!selectedMission || !e.target.files?.[0]) return;
     const file = e.target.files[0];
-    const formData = new FormData();
-    formData.append('file', file);
+    const fileName = `${Date.now()}_${file.name}`;
+    const storageRef = ref(storage, `missions/${selectedMission.id}/${fileName}`);
 
     try {
-      const res = await fetch(`/api/missions/${selectedMission.id}/attachments`, {
-        method: 'POST',
-        body: formData,
+      const snapshot = await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(snapshot.ref);
+      
+      await addDoc(collection(db, 'attachments'), {
+        mission_id: selectedMission.id,
+        filename: fileName,
+        original_name: file.name,
+        mime_type: file.type,
+        size: file.size,
+        url
       });
-      if (res.ok) {
-        fetchAttachments(selectedMission.id);
-      }
     } catch (err) {
       console.error('Failed to upload attachment', err);
     }
   };
 
-  const handleDeleteAttachment = async (id: number) => {
+  const handleDeleteAttachment = async (attachment: Attachment) => {
     if (!window.confirm('Delete this attachment?')) return;
     try {
-      const res = await fetch(`/api/attachments/${id}`, { method: 'DELETE' });
-      if (res.ok && selectedMission) {
-        fetchAttachments(selectedMission.id);
-      }
+      const storageRef = ref(storage, `missions/${attachment.mission_id}/${attachment.filename}`);
+      await deleteObject(storageRef);
+      await deleteDoc(doc(db, 'attachments', attachment.id));
     } catch (err) {
       console.error('Failed to delete attachment', err);
     }
@@ -1292,151 +1161,103 @@ export default function App() {
 
     setSigningUp(true);
     try {
-      const res = await fetch(`/api/missions/${selectedMission.id}/signup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: user.username, status: selectedStatus }),
-      });
-      if (res.ok) {
-        fetchAttendance(selectedMission.id);
+      // Check if already signed up
+      const q = query(collection(db, 'attendance'), where('mission_id', '==', selectedMission.id), where('name', '==', user.username));
+      const snapshot = await getDocs(q);
+      
+      const member = roster.find(m => m.name === user.username);
+      const data = {
+        mission_id: selectedMission.id,
+        name: user.username,
+        status: selectedStatus,
+        role: member?.role || 'Guest',
+        squad: member?.squad || 'Guest',
+        signed_at: new Date().toISOString()
+      };
+
+      if (!snapshot.empty) {
+        await updateDoc(doc(db, 'attendance', snapshot.docs[0].id), data);
       } else {
-        const data = await res.json();
-        alert(`Signup failed: ${data.error || res.statusText}`);
+        await addDoc(collection(db, 'attendance'), data);
       }
     } catch (err) {
       console.error('Signup failed', err);
-      alert('Signup failed. Check console for details.');
+      alert('Signup failed.');
     } finally {
       setSigningUp(false);
     }
   };
 
   const handleSaveMember = async (member: Partial<RosterMember>) => {
-    const isNew = !member.id;
-    const url = isNew ? '/api/roster' : `/api/roster/${member.id}`;
-    const method = isNew ? 'POST' : 'PUT';
-
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(member),
-      });
-      if (res.ok) {
-        fetchRoster();
-        setEditingMember(null);
-        setIsCreatingMember(false);
+      const isNew = !member.id;
+      if (isNew) {
+        const maxOrder = roster.length > 0 ? Math.max(...roster.map(m => m.display_order)) : 0;
+        await addDoc(collection(db, 'roster'), {
+          ...member,
+          display_order: maxOrder + 1
+        });
       } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to save member: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to save member: Server error (${res.status}). Check console for details.`);
-        }
+        const { id, ...data } = member;
+        await updateDoc(doc(db, 'roster', id!), data);
       }
+      setEditingMember(null);
+      setIsCreatingMember(false);
     } catch (err) {
       console.error('Failed to save member', err);
-      alert('Failed to save member. Network error or server is down.');
+      alert('Failed to save member.');
     }
   };
 
-  const handleDeleteMember = async (id: number) => {
+  const handleDeleteMember = async (id: string) => {
     if (!confirm('Are you sure you want to remove this personnel from the roster?')) return;
     try {
-      const res = await fetch(`/api/roster/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchRoster();
-        setEditingMember(null);
-      } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to delete member: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to delete member: Server error (${res.status}). Check console for details.`);
-        }
-      }
+      await deleteDoc(doc(db, 'roster', id));
+      setEditingMember(null);
     } catch (err) {
       console.error('Failed to delete member', err);
-      alert('Failed to delete member. Network error or server is down.');
+      alert('Failed to delete member.');
     }
   };
 
   const handleSaveMission = async (mission: Partial<Mission>) => {
-    const isNew = !mission.id;
-    const url = isNew ? '/api/missions' : `/api/missions/${mission.id}`;
-    const method = isNew ? 'POST' : 'PUT';
-
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mission),
-      });
-      if (res.ok) {
-        fetchMissions();
-        setEditingMission(null);
-        setIsCreatingMission(false);
+      const isNew = !mission.id;
+      if (isNew) {
+        await addDoc(collection(db, 'missions'), {
+          ...mission,
+          status: mission.status || 'upcoming'
+        });
       } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to save mission: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to save mission: Server error (${res.status}). Check console for details.`);
-        }
+        const { id, ...data } = mission;
+        await updateDoc(doc(db, 'missions', id!), data);
       }
+      setEditingMission(null);
+      setIsCreatingMission(false);
     } catch (err) {
       console.error('Failed to save mission', err);
-      alert('Failed to save mission. Network error or server is down.');
-    }
-  };
-
-  const fetchHistoryAttendance = async (missionId: number) => {
-    try {
-      const res = await fetch(`/api/missions/${missionId}/attendance`);
-      const data = await res.json();
-      setHistoryAttendance(data);
-    } catch (err) {
-      console.error('Failed to fetch history attendance', err);
+      alert('Failed to save mission.');
     }
   };
 
   useEffect(() => {
     if (selectedHistoryMission) {
-      fetchHistoryAttendance(selectedHistoryMission.id);
+      const unsub = onSnapshot(query(collection(db, 'attendance'), where('mission_id', '==', selectedHistoryMission.id)), (snapshot) => {
+        setHistoryAttendance(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Attendance)));
+      });
+      return () => unsub();
     }
   }, [selectedHistoryMission]);
 
-  const handleDeleteMission = async (id: number) => {
+  const handleDeleteMission = async (id: string) => {
     if (!confirm('Are you sure you want to delete this mission? All attendance data will be lost.')) return;
     try {
-      const res = await fetch(`/api/missions/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchMissions();
-        setEditingMission(null);
-        if (selectedMission?.id === id) setSelectedMission(null);
-      } else {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          alert(`Failed to delete mission: ${data.error || res.statusText}`);
-        } else {
-          const text = await res.text();
-          console.error("Server returned non-JSON error:", text);
-          alert(`Failed to delete mission: Server error (${res.status}). Check console for details.`);
-        }
-      }
+      await deleteDoc(doc(db, 'missions', id));
+      setEditingMission(null);
+      if (selectedMission?.id === id) setSelectedMission(null);
     } catch (err) {
       console.error('Failed to delete mission', err);
-      alert('Failed to delete mission. Network error or server is down.');
+      alert('Failed to delete mission.');
     }
   };
 
@@ -1757,31 +1578,31 @@ export default function App() {
                     <div className="flex justify-between border-b border-slate-800 pb-1"><span>Master Gunnery Sergeant</span><span className="text-slate-200">Senior Enlisted</span></div>
                     <div className="flex justify-between border-b border-slate-800 pb-1"><span>First Sergeant</span><span className="text-slate-200">Senior Enlisted</span></div>
                     <div className="flex justify-between border-b border-slate-800 pb-1"><span>Master Sergeant / Chief Hospital Corpsman</span><span className="text-slate-200">Senior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Gunnery Sergeant / Hospitalman First Class</span><span className="text-slate-200">Senior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Staff Sergeant / Hospitalman Second Class</span><span className="text-slate-200">Senior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Sergeant / Hospitalman Third Class</span><span className="text-slate-200">Junior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Corporal / Hospitalman</span><span className="text-slate-200">Junior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Lance Corporal / Hospitalman Apprentice</span><span className="text-slate-200">Junior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Private First Class / Hospitalman Recruit</span><span className="text-slate-200">Junior Enlisted</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Private</span><span className="text-slate-200">Junior Enlisted</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Gunnery Sergeant / Hospital Corpsman 1st Class</span><span className="text-slate-200">Senior Enlisted</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Staff Sergeant / Hospital Corpsman 2nd Class</span><span className="text-slate-200">Senior Enlisted</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Sergeant / Hospital Corpsman 3rd Class</span><span className="text-slate-200">Junior Enlisted</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Corporal / Hospitalman</span><span className="text-slate-200">Junior Enlisted, Personalised Uniform</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Lance Corporal / Hospitalman Apprentice</span><span className="text-slate-200">Junior Enlisted, M.O.S. Unlocked</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Private First Class / Hospitalman Recruit</span><span className="text-slate-200">Junior Enlisted, Entry Level Position</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Private</span><span className="text-slate-200">New Member, Requires Training</span></div>
                   </div>
                 </div>
                 <div className="space-y-4">
                   <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Radio Channels</h3>
                   <div className="bg-slate-900/40 border border-slate-800 p-4 space-y-2 text-[10px] font-mono text-slate-400">
-                    <div className="text-cyan-500 font-bold mb-1">LR 148</div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>HQ</span><span className="text-slate-200">CH 1</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Zeus</span><span className="text-slate-200">CH 2</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Medical</span><span className="text-slate-200">CH 3</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery 1</span><span className="text-slate-200">CH 4</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery 2</span><span className="text-slate-200">CH 5</span></div>
-                    <div className="text-cyan-500 font-bold mt-2 mb-1">SR 343</div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>1-1</span><span className="text-slate-200">CH 1</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>1-2</span><span className="text-slate-200">CH 2</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>HQ</span><span className="text-slate-200">CH 3</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Zeus</span><span className="text-slate-200">CH 4</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Medical</span><span className="text-slate-200">CH 5</span></div>
-                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery</span><span className="text-slate-200">CH 6</span></div>
+                    <div className="text-cyan-500 font-bold mb-1">148</div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>HQ</span><span className="text-slate-200">1</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Zeus</span><span className="text-slate-200">2</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Medical</span><span className="text-slate-200">3</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery 1</span><span className="text-slate-200">4</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery 2</span><span className="text-slate-200">5</span></div>
+                    <div className="text-cyan-500 font-bold mt-2 mb-1">343</div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>1-1</span><span className="text-slate-200">1</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>1-2</span><span className="text-slate-200">2</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>HQ</span><span className="text-slate-200">3</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Zeus</span><span className="text-slate-200">4</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Medical</span><span className="text-slate-200">5</span></div>
+                    <div className="flex justify-between border-b border-slate-800 pb-1"><span>Auxillery</span><span className="text-slate-200">6</span></div>
                   </div>
                 </div>
                 <div className="space-y-4">
@@ -2676,15 +2497,16 @@ export default function App() {
                             </div>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               <a 
-                                href={`/uploads/${attachment.filename}`} 
-                                download={attachment.original_name}
+                                href={attachment.url} 
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="p-1.5 hover:bg-slate-800 rounded text-slate-500 hover:text-cyan-400"
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </a>
                               {isAdmin && (
                                 <button 
-                                  onClick={() => handleDeleteAttachment(attachment.id)}
+                                  onClick={() => handleDeleteAttachment(attachment)}
                                   className="p-1.5 hover:bg-slate-800 rounded text-slate-500 hover:text-red-400"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />

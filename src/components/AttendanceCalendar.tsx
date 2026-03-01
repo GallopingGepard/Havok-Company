@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Eye, EyeOff, Filter } from 'lucide-react';
 
 interface RosterMember {
-  id: number;
+  id: string;
   name: string;
   rank: string;
   squad: string;
@@ -14,14 +14,14 @@ interface RosterMember {
 }
 
 interface Mission {
-  id: number;
+  id: string;
   title: string;
   date: string;
 }
 
 interface Attendance {
-  id: number;
-  mission_id: number;
+  id: string;
+  mission_id: string;
   name: string;
   status: string;
   squad?: string;
@@ -206,7 +206,7 @@ export default function AttendanceCalendar({ roster, missions, allAttendance, sh
     });
 
     const dischargedMembers: RosterMember[] = Array.from(dischargedNames).map((name, idx) => ({
-      id: -1000 - idx,
+      id: `discharged-${idx}`,
       name,
       rank: '',
       squad: 'Attendance History (Discharged)',
